@@ -2,7 +2,8 @@ fastapi
 uvicorn[standard]
 pymongo
 python-dotenv
+bcrypt==4.0.1
 passlib[bcrypt]
-passlib
 pydantic
 sqlalchemy[asyncio]
+asyncpg
