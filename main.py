@@ -1,5 +1,10 @@
+import os
 from contextlib import asynccontextmanager
 from os import close
+
+from flask.cli import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
@@ -20,7 +25,7 @@ app = FastAPI(lifespan=lifespan)
 app = FastAPI(title="Epilanka API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[os.getenv("FRONTEND_URL")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
