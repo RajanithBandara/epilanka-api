@@ -1,0 +1,78 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+
+# Environment variables and secrets
+.env
+.env.*
+secrets.json
+local_settings.py
+instance/
+
+# Test / coverage / static analysis
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.pylint.d/
+
+# Logs
+*.log
+logs/
+debug.log
+
+# Databases
+*.sqlite3
+*.db
+
+# Docker
+docker-compose.override.yml
+
+# Build / cache tools
+.tox/
+.cache/
+pip-wheel-metadata/
+
+# Sphinx
+docs/_build/
+
+# Static/uploads (adjust if you track these)
+media/
+uploads/
+
+# Node (if frontend present)
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Misc
+celerybeat-schedule
