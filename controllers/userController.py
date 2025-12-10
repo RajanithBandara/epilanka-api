@@ -1,13 +1,22 @@
 from datetime import datetime, timezone
 from config.db import get_database
 from models.userModel import User, UserLogin
-from passlib.context import CryptContext
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+ph = PasswordHasher()
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return ph.hash(password)
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        ph.verify(hashed, password)
+        return True
+    except VerifyMismatchError:
+        return False
 
 
 def create_user_mongo(user: User):
@@ -30,6 +39,7 @@ def create_user_mongo(user: User):
         "user_id": str(result.inserted_id)
     }
 
+
 def login_user_mongo(credentials: UserLogin):
     db = get_database()
     users_collection = db["users"]
@@ -38,7 +48,7 @@ def login_user_mongo(credentials: UserLogin):
     if not user_doc:
         return {"msg": "User not found"}
 
-    if not pwd_context.verify(credentials.password, user_doc["hashed_password"]):
+    if not verify_password(credentials.password, user_doc["hashed_password"]):
         return {"msg": "Incorrect password"}
 
     return {
@@ -47,3 +57,21 @@ def login_user_mongo(credentials: UserLogin):
         "username": user_doc["username"],
         "email": user_doc["email"]
     }
+
+
+def edit_user_mongo(user_id: str, new_data: dict):
+    db = get_database()
+    users_collection = db["users"]
+
+    if "password" in new_data:
+        new_data["hashed_password"] = hash_password(new_data.pop("password"))
+
+    result = users_collection.update_one(
+        {"_id": user_id},
+        {"$set": new_data}
+    )
+
+    if result.matched_count == 0:
+        return {"msg": "User not found"}
+
+    return {"msg": "User updated successfully"}

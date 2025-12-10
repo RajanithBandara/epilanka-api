@@ -1,5 +1,5 @@
 from fastapi import APIRouter, status, Body, HTTPException
-from controllers.userController import create_user_mongo, login_user_mongo
+from controllers.userController import create_user_mongo, login_user_mongo, edit_user_mongo
 from models.userModel import User, UserLogin
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -29,6 +29,19 @@ def login(credentials: UserLogin = Body(...)):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=login_response.get("msg", "Invalid credentials")
             )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/edit", status_code=status.HTTP_200_OK)
+def edit_user(user: User = Body(...)):
+    try:
+        updated_user = edit_user_mongo(user.user_id, user.dict(exclude={"user_id"}))
+        if updated_user:
+            return {"message": "User updated successfully", "user": updated_user}
+        else:
+            raise HTTPException(status_code=404, detail="User not found")
     except HTTPException:
         raise
     except Exception as e:
