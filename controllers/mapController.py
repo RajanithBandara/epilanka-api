@@ -8,8 +8,8 @@ async def get_nearest_area_from_postgres(lat, lng):
 
     async with AsyncSessionLocal() as session:
         distance_expr = func.sqrt(
-            func.pow(District.lattitude - lat, 2) +
-            func.pow(District.longitude - lng, 2)
+            func.pow(District.longitude - lat, 2) +  # WRONG: subtracting lat from longitude
+            func.pow(District.lattitude - lng, 2)  # WRONG: subtracting lng from latitude
         )
 
         query = (
