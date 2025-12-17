@@ -1,8 +1,8 @@
-from config.db import get_database
-from config.postgredb import AsyncSessionLocal
-from models.locationModel import LocationModel
-from models.districtModel import District
 from sqlalchemy import select, func
+
+from config.postgredb import AsyncSessionLocal
+from models.districtModel import District
+
 
 async def get_nearest_area_from_postgres(lat, lng):
 

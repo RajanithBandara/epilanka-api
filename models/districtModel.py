@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Float
 from config.postgredb import Base
 
 class District(Base):
@@ -6,4 +6,6 @@ class District(Base):
 
     district_id = Column(Integer, primary_key=True, index=True)
     district_name = Column(String, nullable=False)
+    longitude = Column(Float, nullable=False)
+    lattitude = Column(Float, nullable=False)
     province_name = Column(String, nullable=False)
