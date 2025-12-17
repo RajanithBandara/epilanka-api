@@ -13,6 +13,7 @@ from config.db import connect_to_mongodb, close_mongodb_connection
 
 from routes.userRoute import router as user_router
 from routes.diseaseRoute import router as disease_router
+from routes.mapRoute import router as map_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,3 +35,4 @@ app.add_middleware(
 
 app.include_router(user_router)
 app.include_router(disease_router)
+app.include_router(map_router)

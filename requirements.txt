@@ -3,6 +3,14 @@ uvicorn[standard]
 pymongo
 python-dotenv
 argon2-cffi
-pydantic
+pydantic[email]
 sqlalchemy[asyncio]
 asyncpg
+python-jose[cryptography]
+python-multipart
+email-validator
+passlib[bcrypt]
+geopy
+requests
+httpx
+aiohttp
