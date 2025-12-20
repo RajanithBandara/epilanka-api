@@ -6,6 +6,6 @@ class District(Base):
 
     district_id = Column(Integer, primary_key=True, index=True)
     district_name = Column(String, nullable=False)
+    latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    lattitude = Column(Float, nullable=False)
     province_name = Column(String, nullable=False)

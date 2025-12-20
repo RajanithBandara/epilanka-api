@@ -13,6 +13,7 @@ from config.db import connect_to_mongodb, close_mongodb_connection
 from routes.userRoute import router as user_router
 from routes.diseaseRoute import router as disease_router
 from routes.mapRoute import router as map_router
+from routes.user_reportRoute import router as user_report_router
 
 API_KEY = os.getenv("API_SECRET_KEY")
 
@@ -63,3 +64,4 @@ async def api_key_protect(request: Request, call_next):
 app.include_router(user_router)
 app.include_router(disease_router)
 app.include_router(map_router)
+app.include_router(user_report_router)
