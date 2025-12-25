@@ -1,11 +1,16 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from config.db import get_database
 from models.userModel import User, UserLogin
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+import jwt
+import os
 
 ph = PasswordHasher()
 
+SECRET_KEY = os.getenv("JWT_SECRET")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 def hash_password(password: str) -> str:
     return ph.hash(password)
@@ -18,6 +23,17 @@ def verify_password(password: str, hashed: str) -> bool:
     except VerifyMismatchError:
         return False
 
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 def create_user_mongo(user: User):
     db = get_database()
@@ -51,11 +67,20 @@ def login_user_mongo(credentials: UserLogin):
     if not verify_password(credentials.password, user_doc["hashed_password"]):
         return {"msg": "Incorrect password"}
 
+    access_token = create_access_token(
+        data={
+            "user_id": str(user_doc["_id"]),
+            "email": user_doc["email"]
+        }
+    )
+
     return {
         "msg": "Login successful",
         "user_id": str(user_doc["_id"]),
         "username": user_doc["username"],
-        "email": user_doc["email"]
+        "email": user_doc["email"],
+        "access_token": access_token,
+        "token_type": "bearer"
     }
 
 
