@@ -114,8 +114,6 @@ async def get_next_report_id(db, collection_name: str) -> int:
     Get the next report_id for a specific location collection
     """
     collection = db[collection_name]
-
-    # Find the highest report_id in the collection
     last_report = collection.find_one(sort=[("report_id", -1)])
 
     if last_report and "report_id" in last_report:
@@ -127,9 +125,10 @@ async def get_next_report_id(db, collection_name: str) -> int:
 async def process_user_report(payload: UserReport_Request):
     """
     Main function to process user report:
-    1. Extract AI data from description
+    1. Extract AI data from description (including patient counts)
     2. Find nearest location from PostgreSQL
     3. Store in MongoDB under location-based collection
+    4. Update location statistics
     """
 
     # Step 1: Extract details using AI
@@ -147,31 +146,73 @@ async def process_user_report(payload: UserReport_Request):
     # Get next report ID for this location
     report_id = await get_next_report_id(db, collection_name)
 
-    # Create the report document (without storing exact user location for privacy)
+    # Create comprehensive report document
     report_data = {
         "report_id": report_id,
         "user_id": payload.user_id,
-        "nearest_location": nearest_location['district_name'],
-        "province_name": nearest_location['province_name'],
-        "district_id": nearest_location['district_id'],
+
+        # Location information (nearest district, not exact user location for privacy)
+        "location": {
+            "district_id": nearest_location['district_id'],
+            "district_name": nearest_location['district_name'],
+            "province_name": nearest_location['province_name'],
+            "district_latitude": nearest_location['district_latitude'],
+            "district_longitude": nearest_location['district_longitude'],
+            "distance_from_district_center_km": nearest_location['distance_km'],
+            "location_specifics": extracted_data.get("location_specifics")
+        },
+
+        # Original report
         "description": payload.description,
-        "disease_name": extracted_data.get("disease_name"),
-        "disease_type": extracted_data.get("disease_type"),
-        "cases_reported": extracted_data.get("cases_reported"),
-        "time_period": extracted_data.get("time_period"),
-        "confidence": extracted_data.get("confidence"),
+
+        # Extracted disease information
+        "disease_info": {
+            "disease_name": extracted_data.get("disease_name"),
+            "disease_type": extracted_data.get("disease_type"),
+            "severity": extracted_data.get("severity"),
+            "symptoms": extracted_data.get("symptoms", []),
+            "confidence": extracted_data.get("confidence")
+        },
+
+        # Patient/case information
+        "cases_info": {
+            "cases_reported": extracted_data.get("cases_reported"),
+            "age_group": extracted_data.get("age_group"),
+            "time_period": extracted_data.get("time_period")
+        },
+
+        # Metadata
         "created_at": datetime.now(timezone.utc),
+        "status": "pending_verification",  # Can be: pending_verification, verified, false_alarm
+        "verified_by": None,
+        "verification_date": None
     }
 
     # Insert into MongoDB collection
     collection = db[collection_name]
     result = collection.insert_one(report_data)
 
-    return {
-        "report_id": report_id,
-        "collection": collection_name,
-        "nearest_location": nearest_location,
-        "extracted_data": extracted_data,
-        "mongodb_id": str(result.inserted_id)
-    }
+    # Step 4: Update location statistics
+    await update_location_statistics(db, collection_name, extracted_data)
 
+    return {
+        "status": "success",
+        "message": "Report submitted successfully",
+        "data": {
+            "report_id": report_id,
+            "collection": collection_name,
+            "nearest_location": {
+                "district_name": nearest_location['district_name'],
+                "province_name": nearest_location['province_name'],
+                "distance_km": nearest_location['distance_km']
+            },
+            "extracted_data": {
+                "disease_name": extracted_data.get("disease_name"),
+                "disease_type": extracted_data.get("disease_type"),
+                "cases_reported": extracted_data.get("cases_reported"),
+                "time_period": extracted_data.get("time_period"),
+                "confidence": extracted_data.get("confidence")
+            },
+            "mongodb_id": str(result.inserted_id)
+        }
+    }
