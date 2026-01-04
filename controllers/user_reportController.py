@@ -121,7 +121,7 @@ async def process_user_report(payload: UserReport_Request):
         },
         "week_number": current_week,
         "year": current_year,
-        "status": "pending",
+        "status": "approved",
         "score": 0,
         "created_at": current_time,
         "updated_at": current_time
