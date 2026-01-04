@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from sqlalchemy import func, select
 
-from config.db import get_database
+from config.db import get_database, get_async_database
 from config.postgredb import AsyncSessionLocal
 from models.user_reportModel import UserReport_Request
 from models.districtModel import District
