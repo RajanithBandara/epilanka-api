@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from controllers.user_reportController import process_user_report
+from controllers.user_reportController import process_user_report, update_report_score
 from models.user_reportModel import UserReport_Request
 from utils.jwtutils import decode_access_token
 
@@ -59,3 +59,11 @@ async def submit_report(
                 "message": str(e)
             }
         )
+
+@router.post("/vote", status_code=201)
+async def voteReport(reportid: str, userid: str, location: str):
+    await update_report_score(reportid, userid,  location)
+    return {
+        "status": "success",
+        "message": "Vote recorded successfully"
+    }

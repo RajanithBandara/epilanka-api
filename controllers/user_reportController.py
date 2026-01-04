@@ -152,3 +152,58 @@ async def process_user_report(payload: UserReport_Request):
         "extracted_data": case_doc["extracted_data"],
         "created_at": current_time.isoformat()
     }
+
+
+async def update_report_score(report_id: str, user_id: str, district_name: str):
+    db = get_async_database()
+
+    try:
+        report_object_id = ObjectId(report_id)
+        user_object_id = ObjectId(user_id) if isinstance(user_id, str) else user_id
+    except Exception:
+        raise ValueError("Invalid ID format")
+
+    # Get the district-specific collection using provided district name
+    district_collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
+    district_collection = db[district_collection_name]
+
+    # Find the report by ObjectId
+    report = await district_collection.find_one({"_id": report_object_id})
+    if not report:
+        raise ValueError("Report not found")
+
+    # Check if user already voted
+    if "voted_users" in report and str(user_object_id) in report["voted_users"]:
+        raise ValueError("User has already voted for this report")
+
+    # Update report: increment score and add user to voted_users list
+    await district_collection.update_one(
+        {"_id": report_object_id},
+        {
+            "$inc": {"score": 1},
+            "$push": {"voted_users": str(user_object_id)},
+            "$set": {"updated_at": datetime.now(timezone.utc)}
+        }
+    )
+
+    # Update user's voting history
+    users_collection = db["users"]
+    await users_collection.update_one(
+        {"_id": user_object_id},
+        {
+            "$push": {
+                "voted_reports": {
+                    "report_id": str(report_object_id),
+                    "collection": district_collection_name,
+                    "voted_at": datetime.now(timezone.utc)
+                }
+            }
+        }
+    )
+
+    return {
+        "success": True,
+        "new_score": report.get("score", 0) + 1,
+        "district": district_name,
+        "message": "Vote recorded successfully"
+    }
