@@ -3,6 +3,7 @@ import os
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Load environment variables from .env
 load_dotenv()
@@ -40,6 +41,9 @@ def get_database():
     if db is None:
         connect_to_mongodb()
     return db
+
+def get_async_database():
+    return AsyncIOMotorClient(MONGODB_URI).epilanka
 
 def close_mongodb_connection():
     """Close MongoDB connection"""

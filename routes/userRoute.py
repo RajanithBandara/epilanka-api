@@ -22,7 +22,9 @@ def login(credentials: UserLogin = Body(...)):
                 "message": "Login successful",
                 "user_id": login_response.get("user_id"),
                 "username": login_response.get("username"),
-                "email": login_response.get("email")
+                "email": login_response.get("email"),
+                "access_token": login_response.get("access_token"),
+                "token_type": login_response.get("token_type", "bearer")
             }
         else:
             raise HTTPException(
