@@ -3,8 +3,6 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
-#mongodb store these data
-
 class ExtractedData(BaseModel):
     disease_name: Optional[str] = None
     disease_type: str = "unknown"
