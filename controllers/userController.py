@@ -102,6 +102,28 @@ def edit_user_mongo(user_id: str, new_data: dict):
         return {"msg": "User not found"}
 
     return {"msg": "User updated successfully"}
+def change_user_password_mongo(user_id: str, current_password: str, new_password: str):
+    db = get_database()
+    users = db["users"]
+
+    user = users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return False
+
+    if not verify_password(current_password, user["hashed_password"]):
+        return False
+
+    users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "hashed_password": hash_password(new_password),
+                "updated_at": datetime.now(timezone.utc)
+            }
+        }
+    )
+
+    return True
 
 def update_profile_picture_mongo(user_id: str, image_url: str):
     db = get_database()
