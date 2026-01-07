@@ -168,3 +168,19 @@ def update_profile_picture_mongo(user_id: str, image_url: str):
 
     return {"msg": "Profile picture updated"}
 
+def get_user_settings_mongo(user_id: str):
+    db = get_database()
+    users = db["users"]
+
+    user = users.find_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "hashed_password": 0  # exclude password
+        }
+    )
+
+    if not user:
+        return None
+
+    user["_id"] = str(user["_id"])
+    return user
