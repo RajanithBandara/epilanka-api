@@ -1,32 +1,46 @@
-name: CD \- Deploy FastAPI Backend
+name: CD - Deploy FastAPI Backend
 
 on:
   push:
     branches:
-      - master
+      - master   # CHANGE if your branch is master
 
 jobs:
   deploy:
     name: Deploy to Alibaba ECS
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Setup SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
 
-      - name: Deploy
+      - name: Deploy to Server
         run: |
           ssh -o StrictHostKeyChecking=no \
           ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          
             set -e
+            echo "🚀 Starting deployment..."
+
             cd /var/www/epilanka-api
-            git pull origin main
+
+            echo "📦 Pulling latest code"
+            git pull origin master
+
+            echo "🐍 Activating virtualenv"
             source venv/bin/activate
+
+            echo "📚 Installing dependencies"
+            pip install --upgrade pip
             pip install -r requirements.txt
+
+            echo "🔁 Restarting FastAPI service"
             sudo systemctl restart epilanka-api
+
+            echo "✅ Deployment completed successfully"
           EOF
