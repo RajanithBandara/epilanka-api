@@ -3,6 +3,7 @@ from config.db import get_database
 from models.userModel import User, UserLogin
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from bson import ObjectId
 import jwt
 import os
 
@@ -14,7 +15,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 def hash_password(password: str) -> str:
     return ph.hash(password)
-
 
 def verify_password(password: str, hashed: str) -> bool:
     try:
@@ -102,6 +102,30 @@ def edit_user_mongo(user_id: str, new_data: dict):
         return {"msg": "User not found"}
 
     return {"msg": "User updated successfully"}
+
+def update_user_profile_mongo(user_id: str, data: dict):
+    db = get_database()
+    users = db["users"]
+
+    allowed_fields = {"username", "email"}
+    update_data = {k: v for k, v in data.items() if k in allowed_fields}
+
+    if not update_data:
+        return {"msg": "No valid fields provided"}
+
+    update_data["updated_at"] = datetime.now(timezone.utc)
+
+    result = users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": update_data}
+    )
+
+    if result.matched_count == 0:
+        return {"msg": "User not found"}
+
+    return {"msg": "Profile updated"}
+
+
 def change_user_password_mongo(user_id: str, current_password: str, new_password: str):
     db = get_database()
     users = db["users"]
