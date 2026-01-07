@@ -3,7 +3,7 @@ name: CD - Deploy FastAPI Backend
 on:
   push:
     branches:
-      - master   # CHANGE if your branch is master
+      - master
 
 jobs:
   deploy:
@@ -22,8 +22,8 @@ jobs:
       - name: Deploy to Server
         run: |
           ssh -o StrictHostKeyChecking=no \
-          ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
-          
+          deploy@${{ secrets.SERVER_HOST }} << 'EOF'
+            
             set -e
             echo "🚀 Starting deployment..."
 
