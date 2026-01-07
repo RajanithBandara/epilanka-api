@@ -11,7 +11,7 @@ ph = PasswordHasher()
 
 SECRET_KEY = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 2880
 
 def hash_password(password: str) -> str:
     return ph.hash(password)
