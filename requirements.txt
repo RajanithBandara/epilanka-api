@@ -17,3 +17,4 @@ aiohttp
 flask
 motor
 PyJWT
+boto3
