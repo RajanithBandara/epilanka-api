@@ -102,3 +102,23 @@ def edit_user_mongo(user_id: str, new_data: dict):
         return {"msg": "User not found"}
 
     return {"msg": "User updated successfully"}
+
+def update_profile_picture_mongo(user_id: str, image_url: str):
+    db = get_database()
+    users = db["users"]
+
+    result = users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "profile_image": image_url,
+                "updated_at": datetime.now(timezone.utc)
+            }
+        }
+    )
+
+    if result.matched_count == 0:
+        return {"msg": "User not found"}
+
+    return {"msg": "Profile picture updated"}
+
