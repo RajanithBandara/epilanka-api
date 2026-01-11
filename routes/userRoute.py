@@ -165,3 +165,12 @@ def get_user_settings(user_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/getall", status_code=status.HTTP_200_OK)
+def getusers():
+    try:
+        from controllers.userController import get_all_users_mongo
+        users = get_all_users_mongo()
+        return {"users": users}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
