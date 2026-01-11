@@ -39,6 +39,16 @@ def create_user_mongo(user: User):
     db = get_database()
     users = db["users"]
 
+    # Check if email already exists
+    existing_user = users.find_one({"email": user.email})
+    if existing_user:
+        return {"msg": "Email already registered", "error": True}
+
+    # Optional: Check if username already exists
+    existing_username = users.find_one({"username": user.username})
+    if existing_username:
+        return {"msg": "Username already taken", "error": True}
+
     user_doc = {
         "username": user.username,
         "email": user.email,
@@ -50,8 +60,11 @@ def create_user_mongo(user: User):
 
     result = users.insert_one(user_doc)
 
-    return {"user_id": str(result.inserted_id)}
-
+    return {
+        "msg": "User created successfully",
+        "user_id": str(result.inserted_id),
+        "error": False
+    }
 
 
 def login_user_mongo(credentials: UserLogin):
@@ -60,10 +73,14 @@ def login_user_mongo(credentials: UserLogin):
 
     user = users.find_one({"email": credentials.email})
     if not user:
-        return {"msg": "User not found"}
+        return {"msg": "User not found", "error": True}
+
+    if user.get("is_banned", False):
+        ban_reason = user.get("ban_reason", "No reason provided")
+        return {"msg": f"Account is banned. Reason: {ban_reason}", "error": True}
 
     if not verify_password(credentials.password, user["hashed_password"]):
-        return {"msg": "Incorrect password"}
+        return {"msg": "Incorrect password", "error": True}
 
     token = create_access_token(
         data={"user_id": str(user["_id"]), "email": user["email"]}
@@ -76,6 +93,7 @@ def login_user_mongo(credentials: UserLogin):
         "email": user["email"],
         "access_token": token,
         "token_type": "bearer",
+        "error": False
     }
 
 
@@ -105,6 +123,24 @@ def update_user_profile_mongo(user_id: str, data: dict):
 
     if not update_data:
         return {"msg": "No valid fields provided"}
+
+    # Check if email is being updated and already exists
+    if "email" in update_data:
+        existing_user = users.find_one({
+            "email": update_data["email"],
+            "_id": {"$ne": ObjectId(user_id)}
+        })
+        if existing_user:
+            return {"msg": "Email already in use by another account", "error": True}
+
+    # Check if username is being updated and already exists
+    if "username" in update_data:
+        existing_user = users.find_one({
+            "username": update_data["username"],
+            "_id": {"$ne": ObjectId(user_id)}
+        })
+        if existing_user:
+            return {"msg": "Username already taken", "error": True}
 
     update_data["updated_at"] = datetime.now(timezone.utc)
 
@@ -177,3 +213,14 @@ def get_user_settings_mongo(user_id: str):
 
     user["_id"] = str(user["_id"])
     return user
+
+def get_all_users_mongo():
+    db = get_database()
+    users = db["users"]
+
+    user_list = []
+    for user in users.find({}, {"hashed_password": 0}):
+        user["_id"] = str(user["_id"])
+        user_list.append(user)
+
+    return user_list

@@ -6,6 +6,7 @@ argon2-cffi
 pydantic[email]
 sqlalchemy[asyncio]
 asyncpg
+psycopg2-binary
 python-jose[cryptography]
 python-multipart
 email-validator
