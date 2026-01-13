@@ -1,8 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional
-from bson import ObjectId
+from typing import Optional
+from pydantic import BaseModel
 
 from controllers.adminController import (
+    admin_register_mongo,
+    admin_login_mongo,
     ban_users_mongo,
     view_banned_users_mongo,
     view_user_activity_mongo,
@@ -11,10 +13,33 @@ from controllers.adminController import (
     view_tables_postgres
 )
 
+class AdminRegisterRequest(BaseModel):
+    username: str
+    password: str
+
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
 router = APIRouter(
     prefix="/admin",
     tags=["Admin"]
 )
+
+
+@router.post("/register")
+def register_admin(request: AdminRegisterRequest):
+    result = admin_register_mongo(request.username, request.password)
+    if "already taken" in result["msg"].lower() or "required" in result["msg"].lower() or "must be at least" in result["msg"].lower():
+        raise HTTPException(status_code=400, detail=result["msg"])
+    return result
+
+@router.post("/login")
+def login_admin(request: AdminLoginRequest):
+    result = admin_login_mongo(request.username, request.password)
+    if "invalid credentials" in result["msg"].lower():
+        raise HTTPException(status_code=401, detail=result["msg"])
+    return result
 
 
 @router.put("/users/{user_id}/ban")
@@ -48,6 +73,6 @@ def list_all_users():
 
 
 @router.get("/postgres/tables")
-def get_postgres_tables(reports_limit: int = Query(50, ge=1)):
-    all_data = view_tables_postgres(reports_limit)
-    return all_data
+async def get_all_tables(reports_limit: int = 10):
+    data = await view_tables_postgres(reports_limit=reports_limit)
+    return data

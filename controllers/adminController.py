@@ -1,8 +1,112 @@
-from config.db import get_database
+from datetime import datetime, timezone, timedelta, date, time
+from decimal import Decimal
+from typing import Dict, Any
+from uuid import uuid4, UUID
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 from bson import ObjectId
-from datetime import datetime, timezone
-from config.postgredb import AsyncSessionLocal
 from sqlalchemy import text
+
+from config.db import get_database
+from config.postgredb import AsyncSessionLocal
+
+def to_jsonable(v: Any):
+    if isinstance(v, (datetime, date, time)):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, UUID):
+        return str(v)
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return v.hex()
+    return v
+
+
+def create_admin_session(admin_id: str):
+    db = get_database()
+    sessions = db["admin_sessions"]
+
+    session_id = uuid4().hex
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+
+    sessions.insert_one({
+        "session_id": session_id,
+        "admin_id": admin_id,
+        "expires_at": expires_at,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+    return session_id
+
+ph = PasswordHasher()
+
+
+def admin_register_mongo(username: str, password: str) -> Dict[str, Any]:
+    db = get_database()
+    admins = db["admins"]
+
+    username = (username or "").strip().lower()
+    password = (password or "").strip()
+
+    if not username:
+        return {"msg": "Username is required"}
+    if len(password) < 8:
+        return {"msg": "Password must be at least 8 characters"}
+
+    existing_admin = admins.find_one({"username": username})
+    if existing_admin:
+        return {"msg": "Username already taken"}
+
+    hashed_password = ph.hash(password)
+    now = datetime.now(timezone.utc)
+
+    res = admins.insert_one(
+        {
+            "username": username,
+            "hashed_password": hashed_password,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+    return {
+        "msg": "Admin registered successfully",
+        "admin_id": str(res.inserted_id),
+        "username": username,
+    }
+
+
+def admin_login_mongo(username: str, password: str) -> Dict[str, Any]:
+    db = get_database()
+    admins = db["admins"]
+
+    username = (username or "").strip().lower()
+    password = (password or "").strip()
+
+    if not username or not password:
+        return {"msg": "Invalid credentials"}
+
+    admin = admins.find_one({"username": username})
+    if not admin:
+        return {"msg": "Invalid credentials"}
+
+    try:
+        ph.verify(admin["hashed_password"], password)
+    except VerifyMismatchError:
+        return {"msg": "Invalid credentials"}
+
+    if ph.check_needs_rehash(admin["hashed_password"]):
+        admins.update_one(
+            {"_id": admin["_id"]},
+            {"$set": {"hashed_password": ph.hash(password), "updated_at": datetime.now(timezone.utc)}},
+        )
+
+    return {
+        "msg": "Login successful",
+        "admin_id": str(admin["_id"]),
+        "username": admin["username"],
+    }
 
 
 def ban_users_mongo(user_id: str, is_banned: bool = True, reason: str = None):
@@ -97,76 +201,75 @@ def get_all_users_mongo():
     return user_list
 
 
-async def view_tables_postgres(reports_limit: int = 50):
+async def view_tables_postgres(
+    per_table_limit: int = 200,
+    reports_limit: int = 50,
+) -> Dict[str, Any]:
     async with AsyncSessionLocal() as session:
         try:
             # Get all table names
-            result = await session.execute(text("""
-                                                SELECT table_name
-                                                FROM information_schema.tables
-                                                WHERE table_schema = 'public'
-                                                ORDER BY table_name
-                                                """))
-            tables = result.fetchall()
+            res = await session.execute(text("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+            """))
+            tables = [r[0] for r in res.fetchall()]
 
-            all_data = {}
+            all_data: Dict[str, Any] = {}
 
-            for table in tables:
-                table_name = table[0]
-
+            for table_name in tables:
                 try:
-                    # Get column names using parameterized query
-                    result = await session.execute(
-                        text(
-                            "SELECT column_name FROM information_schema.columns WHERE table_name = :table_name ORDER BY ordinal_position"),
-                        {"table_name": table_name}
+                    # Get columns
+                    col_res = await session.execute(
+                        text("""
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = :t
+                            ORDER BY ordinal_position
+                        """),
+                        {"t": table_name},
                     )
-                    columns = [col[0] for col in result.fetchall()]
+                    columns = [c[0] for c in col_res.fetchall()]
 
-                    # Get total row count using quoted identifier
-                    count_query = text(f'SELECT COUNT(*) FROM "{table_name}"')
-                    result = await session.execute(count_query)
-                    total_rows = result.scalar()
+                    # Count rows (can be heavy on huge tables)
+                    count_res = await session.execute(
+                        text(f'SELECT COUNT(*) AS c FROM "{table_name}"')
+                    )
+                    total_rows = int(count_res.scalar() or 0)
 
-                    # Apply limit for reports table
-                    if table_name.lower() in ['reports', 'report']:
-                        data_query = text(f'SELECT * FROM "{table_name}" LIMIT :limit')
-                        result = await session.execute(data_query, {"limit": reports_limit})
-                        is_limited = total_rows > reports_limit
-                    else:
-                        data_query = text(f'SELECT * FROM "{table_name}"')
-                        result = await session.execute(data_query)
-                        is_limited = False
+                    # Decide limit
+                    limit = per_table_limit
+                    if table_name.lower() in ("reports", "report"):
+                        limit = reports_limit
 
-                    rows = result.fetchall()
+                    # Fetch as mappings (dict rows)
+                    data_res = await session.execute(
+                        text(f'SELECT * FROM "{table_name}" LIMIT :lim'),
+                        {"lim": limit},
+                    )
+                    rows = data_res.mappings().all()
 
-                    # Convert rows to dictionaries
-                    table_data = []
+                    # Make JSON-safe
+                    data = []
                     for row in rows:
-                        row_dict = {}
-                        for idx, col in enumerate(columns):
-                            value = row[idx]
-                            # Convert datetime objects to strings
-                            if isinstance(value, datetime):
-                                row_dict[col] = value.isoformat()
-                            else:
-                                row_dict[col] = value
-                        table_data.append(row_dict)
+                        data.append({k: to_jsonable(v) for k, v in row.items()})
 
                     all_data[table_name] = {
                         "columns": columns,
                         "total_rows": total_rows,
-                        "displayed_rows": len(table_data),
-                        "is_limited": is_limited,
-                        "data": table_data
+                        "displayed_rows": len(data),
+                        "is_limited": total_rows > limit,
+                        "limit": limit,
+                        "data": data,
                     }
 
                 except Exception as table_error:
-                    all_data[table_name] = {
-                        "error": f"Error processing table: {str(table_error)}"
-                    }
+                    all_data[table_name] = {"error": f"Error processing table: {table_error}"}
 
             return all_data
 
         except Exception as e:
-            return {"error": f"Database error: {str(e)}"}
+            return {"error": f"Database error: {e}"}
