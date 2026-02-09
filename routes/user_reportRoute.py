@@ -21,7 +21,6 @@ async def submit_report(
     User ID is extracted from the token automatically.
     """
     try:
-        # Verify JWT token and extract user_id
         token_payload = decode_access_token(credentials.credentials)
         user_id = token_payload.get("user_id")
 
