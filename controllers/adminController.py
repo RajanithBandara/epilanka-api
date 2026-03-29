@@ -201,6 +201,30 @@ def get_all_users_mongo():
     return user_list
 
 
+def admin_reset_user_password_mongo(user_id: str, new_password: str) -> Dict[str, Any]:
+    db = get_database()
+    users = db["users"]
+
+    new_password = (new_password or "").strip()
+    if len(new_password) < 8:
+        return {"msg": "Password must be at least 8 characters"}
+
+    res = users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "hashed_password": ph.hash(new_password),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    if res.matched_count == 0:
+        return {"msg": "User not found"}
+
+    return {"msg": "Password reset successfully"}
+
+
 async def view_tables_postgres(
     per_table_limit: int = 200,
     reports_limit: int = 50,
@@ -273,3 +297,4 @@ async def view_tables_postgres(
 
         except Exception as e:
             return {"error": f"Database error: {e}"}
+
