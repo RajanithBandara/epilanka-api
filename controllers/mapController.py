@@ -137,12 +137,14 @@ async def fetch_nearest_area_from_postgres_only(lat: float, lng: float):
     nearest_area = await get_nearest_area_with_risk_levels(lat, lng)
 
     if nearest_area:
+        current_alerts = build_current_alerts(nearest_area["risk_levels"])
         return {
             "user_location": {
                 "latitude": lat,
                 "longitude": lng
             },
             "nearest_area": nearest_area,
+            "current_alerts": current_alerts,
             "warning": generate_warning(nearest_area["risk_levels"]),
             "data_period": f"Week {nearest_area['week_number']}, {nearest_area['year']}"
         }
@@ -153,8 +155,28 @@ async def fetch_nearest_area_from_postgres_only(lat: float, lng: float):
                 "longitude": lng
             },
             "nearest_area": None,
+            "current_alerts": [],
             "message": "No districts found in database"
         }
+
+
+def build_current_alerts(risk_levels: dict) -> list[dict]:
+    alerts = []
+
+    for disease_data in risk_levels.values():
+        if disease_data["level"] in ["medium", "high"]:
+            alerts.append(
+                {
+                    "disease_id": disease_data["disease_id"],
+                    "disease_name": disease_data["disease_name"],
+                    "level": disease_data["level"],
+                    "count": disease_data["count"],
+                }
+            )
+
+    severity_order = {"high": 2, "medium": 1, "low": 0, "safe": 0}
+    alerts.sort(key=lambda x: (severity_order.get(x["level"], 0), x["count"]), reverse=True)
+    return alerts
 
 
 def generate_warning(risk_levels: dict) -> str:
