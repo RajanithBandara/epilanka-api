@@ -77,7 +77,7 @@ async def fetchReportsbyLocation(
         # Aggregate reports from all district collections in the province
         all_reports = []
         for district in districts:
-            district_collection_name = f"districtwisecases_{district.replace(' ', '_').lower()}"
+            district_collection_name = f"reports_{district.replace(' ', '_').lower()}"
             if district_collection_name in db.list_collection_names():
                 collection = db[district_collection_name]
                 reports = list(collection.find(
@@ -116,7 +116,7 @@ async def fetchReportsbyLocation(
         all_reports = []
         district_collections = [
             name for name in db.list_collection_names()
-            if name.startswith("districtwisecases_")
+            if name.startswith("reports_")
         ]
 
         for collection_name in district_collections:
