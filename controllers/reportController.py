@@ -4,6 +4,9 @@ from config.db import get_database
 from config.postgredb import AsyncSessionLocal
 from sqlalchemy import select
 from models.districtModel import District
+from models.historydataModel import HistoryData
+from models.diseaseModel import Disease
+from collections import defaultdict
 
 
 async def fetchReportsbyLocation(
@@ -151,3 +154,33 @@ async def fetchReportsbyLocation(
                 for report in paginated_reports
             ]
         }
+
+async def fetchHistoricalChartData(district_name: str):
+    """
+    Fetch historical disease case data formatted for charts by district.
+    """
+    async with AsyncSessionLocal() as session:
+        query = (
+            select(HistoryData.year, HistoryData.week_number, Disease.disease_name, HistoryData.case_count)
+            .join(District, HistoryData.district_id == District.district_id)
+            .join(Disease, HistoryData.disease_id == Disease.disease_id)
+            .where(District.district_name == district_name)
+            .order_by(HistoryData.year, HistoryData.week_number)
+        )
+        result = await session.execute(query)
+        
+        grouped = defaultdict(dict)
+        for year, week, disease_name, count in result:
+            key = f"{year}-W{week:02d}"
+            if "period" not in grouped[key]:
+                grouped[key]["period"] = key
+                grouped[key]["year"] = year
+                grouped[key]["week"] = week
+            
+            # Add or sum the case counts per disease
+            if disease_name in grouped[key]:
+                grouped[key][disease_name] += count
+            else:
+                grouped[key][disease_name] = count
+                
+        return list(grouped.values())
