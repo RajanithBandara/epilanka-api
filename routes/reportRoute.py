@@ -23,3 +23,9 @@ async def get_reports_by_location(
         days=days
     )
 
+@router.get("/historical-chart", status_code=200)
+async def get_historical_chart_data(
+    district_name: str = Query(..., description="Filter by district name")
+):
+    from controllers.reportController import fetchHistoricalChartData
+    return await fetchHistoricalChartData(district_name=district_name)
