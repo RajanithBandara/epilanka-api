@@ -8,7 +8,13 @@ load_dotenv()
 from fastapi import FastAPI, Request, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 
-from config.db import connect_to_mongodb, close_mongodb_connection
+from config.db import (
+    connect_to_mongodb,
+    connect_to_mongodb_async,
+    close_mongodb_connection,
+    close_mongodb_async_connection
+)
+from config.postgredb import close_postgres_connection
 
 from routes.userRoute import router as user_router
 from routes.diseaseRoute import router as disease_router
@@ -21,9 +27,20 @@ API_KEY = os.getenv("API_SECRET_KEY")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    connect_to_mongodb()
+    # Startup
+    print("🚀 Starting up...")
+    connect_to_mongodb()  # Sync MongoDB connection
+    connect_to_mongodb_async()  # Async MongoDB connection
+    print("✅ All connections initialized")
+    
     yield
-    close_mongodb_connection()
+    
+    # Shutdown
+    print("🛑 Shutting down...")
+    close_mongodb_connection()  # Close sync MongoDB
+    await close_mongodb_async_connection()  # Close async MongoDB
+    await close_postgres_connection()  # Close PostgreSQL
+    print("✅ All connections closed")
 
 app = FastAPI(title="Epilanka API", lifespan=lifespan)
 
