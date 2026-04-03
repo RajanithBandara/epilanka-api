@@ -42,12 +42,23 @@ async def lifespan(app: FastAPI):
     await close_postgres_connection()  # Close PostgreSQL
     print("✅ All connections closed")
 
+from fastapi.responses import JSONResponse
+
 app = FastAPI(title="Epilanka API", lifespan=lifespan)
 
-# CORS Middleware
+# CORS Middleware — allow the frontend origins
+_frontend = os.getenv("FRONTEND_URL", "http://localhost:3000")
+_allowed_origins = [
+    _frontend,
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://epilanka.app",
+    "https://www.epilanka.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL")],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,25 +66,26 @@ app.add_middleware(
 
 @app.middleware("http")
 async def api_key_protect(request: Request, call_next):
-    # Allow docs and health check endpoints
+    # Allow Swagger docs
     if request.url.path in ["/docs", "/openapi.json", "/redoc"]:
         return await call_next(request)
 
-    # Get API key from request header
+    # CORS preflight — must pass through so CORSMiddleware can respond
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     client_key = request.headers.get("x-api-key")
 
-    # Reject if no API key is provided
     if not client_key:
-        raise HTTPException(
+        return JSONResponse(
             status_code=401,
-            detail="API key is required. Please provide 'x-api-key' header."
+            content={"detail": "API key is required. Please provide 'x-api-key' header."}
         )
 
-    # Reject if API key is invalid
     if client_key != API_KEY:
-        raise HTTPException(
+        return JSONResponse(
             status_code=403,
-            detail="Invalid API key. Access denied."
+            content={"detail": "Invalid API key. Access denied."}
         )
 
     return await call_next(request)

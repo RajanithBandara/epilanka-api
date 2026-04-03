@@ -19,3 +19,4 @@ flask
 motor
 PyJWT
 boto3
+appwrite
