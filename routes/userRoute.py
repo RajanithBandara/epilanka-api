@@ -1,176 +1,127 @@
-from fastapi import APIRouter, status, Body, HTTPException, UploadFile, File, Header
-from controllers.userController import (
-    create_user_mongo,
-    login_user_mongo,
-    edit_user_mongo,
-    update_user_profile_mongo,
-    change_user_password_mongo,
-    update_profile_picture_mongo,
-    get_user_settings_mongo
-)
-from models.userModel import User, UserLogin
+"""
+User routes — authentication is handled by Appwrite.
+All protected endpoints require a valid Appwrite JWT in Authorization: Bearer <jwt>.
+"""
+
 import uuid
 import os
-from utils.r2_clients import r2_client, BUCKET_NAME, PUBLIC_BASE_URL
+from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
+
+from controllers.userController import (
+    get_or_create_user_profile,
+    get_user_settings_mongo,
+    get_all_users_mongo,
+    update_user_profile_mongo,
+    update_profile_picture_mongo,
+)
+from utils.auth_deps import get_current_user, AppwriteUser
+from utils.r2_clients import r2_client, BUCKET_NAME, PUBLIC_BASE_URL
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-
-# Pydantic models for request bodies
-class ProfileUpdate(BaseModel):
-    username: str = None
-    email: str = None
-
-
-class PasswordChange(BaseModel):
-    current_password: str
-    new_password: str
-
-
-# API Key validation
 VALID_API_KEY = os.getenv("API_SECRET_KEY")
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-def create_user(user: User = Body(...)):
-    try:
-        created_user = create_user_mongo(user)
-        return {"message": "User created successfully", "user": created_user}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ── Pydantic models ──────────────────────────────────────────────────────────
+
+class ProfileUpdate(BaseModel):
+    username: str | None = None
+    email: str | None = None
 
 
-@router.post("/login", status_code=status.HTTP_200_OK)
-def login(credentials: UserLogin = Body(...)):
-    try:
-        login_response = login_user_mongo(credentials)
+# ── Sync / upsert profile after Appwrite login ───────────────────────────────
 
-        if login_response.get("msg") == "Login successful":
-            return {
-                "message": "Login successful",
-                "user_id": login_response.get("user_id"),
-                "username": login_response.get("username"),
-                "email": login_response.get("email"),
-                "access_token": login_response.get("access_token"),
-                "token_type": login_response.get("token_type", "bearer")
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=login_response.get("msg", "Invalid credentials")
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/sync", status_code=status.HTTP_200_OK)
+def sync_user(user: AppwriteUser = Depends(get_current_user)):
+    """
+    Called by the frontend immediately after Appwrite login.
+    Creates (or retrieves) the MongoDB profile document for this Appwrite user.
+    """
+    profile = get_or_create_user_profile(
+        appwrite_user_id=user["$id"],
+        email=user.get("email", ""),
+        name=user.get("name", ""),
+    )
+    return {"message": "Profile synced", "user": profile}
 
 
-@router.put("/profile/{user_id}", status_code=status.HTTP_200_OK)
-def update_profile(user_id: str, profile_data: ProfileUpdate = Body(...)):
-    try:
-        update_dict = profile_data.dict(exclude_unset=True)
-        result = update_user_profile_mongo(user_id, update_dict)
+# ── Read ─────────────────────────────────────────────────────────────────────
 
-        if result.get("msg") == "User not found":
-            raise HTTPException(status_code=404, detail="User not found")
-
-        return {"message": result.get("msg")}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/change-password/{user_id}", status_code=status.HTTP_200_OK)
-def change_password(user_id: str, password_data: PasswordChange = Body(...)):
-    try:
-        success = change_user_password_mongo(
-            user_id,
-            password_data.current_password,
-            password_data.new_password
+@router.get("/me", status_code=status.HTTP_200_OK)
+def get_me(user: AppwriteUser = Depends(get_current_user)):
+    """Return the current user's MongoDB profile."""
+    profile = get_user_settings_mongo(user["$id"])
+    if not profile:
+        # Auto-create profile if missing
+        profile = get_or_create_user_profile(
+            appwrite_user_id=user["$id"],
+            email=user.get("email", ""),
+            name=user.get("name", ""),
         )
-
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Current password is incorrect or user not found"
-            )
-
-        return {"message": "Password changed successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"user": profile}
 
 
-@router.post("/profilepic/{user_id}")
-async def upload_profile_picture(
-        user_id: str,
-        file: UploadFile = File(...),
-        x_api_key: str = Header(...)
+@router.get("/settings/{user_id}", status_code=status.HTTP_200_OK)
+def get_user_settings(user_id: str, current: AppwriteUser = Depends(get_current_user)):
+    """Get profile by Appwrite user_id. Users may only access their own profile."""
+    if current["$id"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    profile = get_user_settings_mongo(user_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user": profile}
+
+
+@router.get("/getall", status_code=status.HTTP_200_OK)
+def get_all_users(current: AppwriteUser = Depends(get_current_user)):
+    """Admin usage — returns all user profiles."""
+    return {"users": get_all_users_mongo()}
+
+
+# ── Update ───────────────────────────────────────────────────────────────────
+
+@router.put("/profile", status_code=status.HTTP_200_OK)
+def update_profile(
+    profile_data: ProfileUpdate = Body(...),
+    user: AppwriteUser = Depends(get_current_user),
 ):
-    # Validate API key
-    if x_api_key != VALID_API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+    update_dict = profile_data.dict(exclude_unset=True)
+    result = update_user_profile_mongo(user["$id"], update_dict)
+    if result.get("error"):
+        raise HTTPException(status_code=409, detail=result["msg"])
+    if result.get("msg") == "User not found":
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": result["msg"]}
 
-    # Validate file type
+
+@router.post("/profilepic", status_code=status.HTTP_200_OK)
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    user: AppwriteUser = Depends(get_current_user),
+):
     if file.content_type not in ["image/jpeg", "image/png", "image/jpg"]:
         raise HTTPException(status_code=400, detail="Only JPG/PNG allowed")
 
     try:
-        # Generate unique filename
-        file_ext = file.filename.split(".")[-1]
+        file_ext = (file.filename or "img").rsplit(".", 1)[-1]
         filename = f"profiles/{uuid.uuid4()}.{file_ext}"
 
-        # Upload to R2
         r2_client.upload_fileobj(
             file.file,
             BUCKET_NAME,
             filename,
-            ExtraArgs={
-                "ContentType": file.content_type,
-            },
+            ExtraArgs={"ContentType": file.content_type},
         )
 
-        # Construct image URL
         image_url = f"{PUBLIC_BASE_URL}/{filename}"
-
-        # Update user profile in database
-        result = update_profile_picture_mongo(user_id, image_url)
+        result = update_profile_picture_mongo(user["$id"], image_url)
 
         if result.get("msg") == "User not found":
             raise HTTPException(status_code=404, detail="User not found")
 
-        return {
-            "message": "Profile picture updated successfully",
-            "image_url": image_url
-        }
+        return {"message": "Profile picture updated", "image_url": image_url}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/settings/{user_id}", status_code=status.HTTP_200_OK)
-def get_user_settings(user_id: str):
-    try:
-        user_data = get_user_settings_mongo(user_id)
-
-        if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        return {"user": user_data}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/getall", status_code=status.HTTP_200_OK)
-def getusers():
-    try:
-        from controllers.userController import get_all_users_mongo
-        users = get_all_users_mongo()
-        return {"users": users}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

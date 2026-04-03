@@ -77,20 +77,26 @@ def get_async_database():
 
 def close_mongodb_connection() -> None:
     """Close MongoDB connection properly"""
-    global client
+    global client, db
     if client is not None:
         try:
             client.close()
             print("✅ MongoDB sync connection closed")
         except Exception as e:
             print(f"❌ Error closing MongoDB sync connection: {e}")
+        finally:
+            client = None
+            db = None
 
 async def close_mongodb_async_connection() -> None:
     """Close async MongoDB connection properly"""
-    global async_client
+    global async_client, async_db
     if async_client is not None:
         try:
             async_client.close()
             print("✅ MongoDB async connection closed")
         except Exception as e:
             print(f"❌ Error closing MongoDB async connection: {e}")
+        finally:
+            async_client = None
+            async_db = None
