@@ -1,28 +1,29 @@
 from fastapi import APIRouter, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from controllers.user_reportController import process_user_report, update_report_score
+from controllers.user_reportController import (
+    process_user_report,
+    update_report_score,
+    remove_report_vote,
+    has_user_voted,
+)
 from models.user_reportModel import UserReport_Request
-from utils.jwtutils import decode_access_token
+from utils.auth_deps import get_current_user, AppwriteUser
 
 router = APIRouter(prefix="/user_reports", tags=["user_reports"])
-security = HTTPBearer()
 
 
 @router.post("/submit", status_code=201)
 async def submit_report(
     payload: UserReport_Request,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    user: AppwriteUser = Depends(get_current_user)
 ):
-    print("Auth header received ", credentials)
     """
-    Submit a user disease report with JWT authentication.
+    Submit a user disease report with Appwrite JWT authentication.
     Requires Bearer token in Authorization header.
-    User ID is extracted from the token automatically.
+    User ID is extracted from the Appwrite token automatically.
     """
     try:
-        token_payload = decode_access_token(credentials.credentials)
-        user_id = token_payload.get("user_id")
+        user_id = user.get("$id")
 
         if not user_id:
             raise HTTPException(
@@ -61,8 +62,44 @@ async def submit_report(
 
 @router.post("/vote", status_code=201)
 async def voteReport(reportid: str, userid: str, location: str):
-    await update_report_score(reportid, userid,  location)
-    return {
-        "status": "success",
-        "message": "Vote recorded successfully"
-    }
+    try:
+        result = await update_report_score(reportid, userid, location)
+        return {
+            "status": "success",
+            "message": "Vote recorded successfully",
+            "data": result,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/unvote", status_code=200)
+async def unvoteReport(reportid: str, userid: str, location: str):
+    try:
+        result = await remove_report_vote(reportid, userid, location)
+        return {
+            "status": "success",
+            "message": "Vote removed successfully",
+            "data": result,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/voted", status_code=200)
+async def getVotedStatus(reportid: str, userid: str, location: str):
+    try:
+        result = await has_user_voted(reportid, userid, location)
+        return {
+            "status": "success",
+            "message": "Vote status fetched",
+            "data": result,
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

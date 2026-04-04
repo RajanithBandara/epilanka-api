@@ -125,3 +125,29 @@ def update_profile_picture_mongo(appwrite_user_id: str, image_url: str) -> dict:
         return {"msg": "User not found"}
 
     return {"msg": "Profile picture updated"}
+
+
+def remove_profile_picture_mongo(appwrite_user_id: str) -> dict:
+    db = get_database()
+    users = db["users"]
+
+    existing = users.find_one({"appwrite_id": appwrite_user_id})
+    if not existing:
+        return {"msg": "User not found"}
+
+    previous_image = existing.get("profile_image")
+
+    users.update_one(
+        {"appwrite_id": appwrite_user_id},
+        {
+            "$set": {
+                "profile_image": None,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    return {
+        "msg": "Profile picture removed",
+        "previous_image": previous_image,
+    }

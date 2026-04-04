@@ -8,6 +8,45 @@ from models.user_reportModel import UserReport_Request
 from models.districtModel import District
 
 
+async def _resolve_user_vote_keys(db, user_id: str):
+    """
+    Resolve incoming user identifier to stable vote keys.
+    Supports Appwrite user IDs and legacy Mongo ObjectId user IDs.
+    """
+    users_collection = db["users"]
+
+    user_doc = await users_collection.find_one({"appwrite_id": user_id})
+    if user_doc:
+        mongo_id = str(user_doc.get("_id"))
+        appwrite_id = user_doc.get("appwrite_id")
+        return {
+            "user_doc": user_doc,
+            "mongo_id": mongo_id,
+            "appwrite_id": appwrite_id,
+            "vote_user_key": appwrite_id or mongo_id,
+            "alt_vote_user_key": mongo_id if appwrite_id else None,
+        }
+
+    try:
+        mongo_object_id = ObjectId(user_id)
+    except Exception:
+        raise ValueError("Invalid user_id format")
+
+    user_doc = await users_collection.find_one({"_id": mongo_object_id})
+    if not user_doc:
+        raise ValueError("User not found")
+
+    mongo_id = str(user_doc.get("_id"))
+    appwrite_id = user_doc.get("appwrite_id")
+    return {
+        "user_doc": user_doc,
+        "mongo_id": mongo_id,
+        "appwrite_id": appwrite_id,
+        "vote_user_key": appwrite_id or mongo_id,
+        "alt_vote_user_key": mongo_id if appwrite_id else None,
+    }
+
+
 def get_current_week() -> int:
     return datetime.now().isocalendar()[1]
 
@@ -69,14 +108,20 @@ async def process_user_report(payload: UserReport_Request):
     db = get_database()
     users_collection = db["users"]
 
-    # Convert user_id to ObjectId if it's a string
-    try:
-        user_object_id = ObjectId(payload.user_id) if isinstance(payload.user_id, str) else payload.user_id
-    except Exception:
-        raise ValueError("Invalid user_id format")
+    # The authenticated user ID comes from Appwrite JWT (appwrite_id), not Mongo _id.
+    # Resolve by appwrite_id first, then optionally support legacy Mongo ObjectId input.
+    user = users_collection.find_one({"appwrite_id": payload.user_id})
 
-    # Verify user exists
-    user = users_collection.find_one({"_id": user_object_id})
+    user_object_id = None
+    if user:
+        user_object_id = user.get("_id")
+    else:
+        try:
+            user_object_id = ObjectId(payload.user_id) if isinstance(payload.user_id, str) else payload.user_id
+            user = users_collection.find_one({"_id": user_object_id})
+        except Exception:
+            user = None
+
     if not user:
         raise ValueError("User not found")
 
@@ -159,39 +204,45 @@ async def update_report_score(report_id: str, user_id: str, district_name: str):
 
     try:
         report_object_id = ObjectId(report_id)
-        user_object_id = ObjectId(user_id) if isinstance(user_id, str) else user_id
     except Exception:
-        raise ValueError("Invalid ID format")
+        raise ValueError("Invalid report_id format")
 
-    # Get the district-specific collection using provided district name
+    identity = await _resolve_user_vote_keys(db, user_id)
+    vote_user_key = str(identity["vote_user_key"])
+    alt_vote_user_key = (
+        str(identity["alt_vote_user_key"])
+        if identity.get("alt_vote_user_key")
+        else None
+    )
+
     district_collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
     district_collection = db[district_collection_name]
 
-    # Find the report by ObjectId
     report = await district_collection.find_one({"_id": report_object_id})
     if not report:
         raise ValueError("Report not found")
 
-    # Check if user already voted
-    if "voted_users" in report and str(user_object_id) in report["voted_users"]:
+    voted_users = report.get("voted_users", [])
+    already_voted = vote_user_key in voted_users or (
+        alt_vote_user_key in voted_users if alt_vote_user_key else False
+    )
+    if already_voted:
         raise ValueError("User has already voted for this report")
 
-    # Update report: increment score and add user to voted_users list
     await district_collection.update_one(
         {"_id": report_object_id},
         {
             "$inc": {"score": 1},
-            "$push": {"voted_users": str(user_object_id)},
+            "$addToSet": {"voted_users": vote_user_key},
             "$set": {"updated_at": datetime.now(timezone.utc)}
         }
     )
 
-    # Update user's voting history
     users_collection = db["users"]
     await users_collection.update_one(
-        {"_id": user_object_id},
+        {"_id": identity["user_doc"]["_id"]},
         {
-            "$push": {
+            "$addToSet": {
                 "voted_reports": {
                     "report_id": str(report_object_id),
                     "collection": district_collection_name,
@@ -204,6 +255,110 @@ async def update_report_score(report_id: str, user_id: str, district_name: str):
     return {
         "success": True,
         "new_score": report.get("score", 0) + 1,
+        "voted": True,
         "district": district_name,
         "message": "Vote recorded successfully"
+    }
+
+
+async def remove_report_vote(report_id: str, user_id: str, district_name: str):
+    db = get_async_database()
+
+    try:
+        report_object_id = ObjectId(report_id)
+    except Exception:
+        raise ValueError("Invalid report_id format")
+
+    identity = await _resolve_user_vote_keys(db, user_id)
+    vote_user_key = str(identity["vote_user_key"])
+    alt_vote_user_key = (
+        str(identity["alt_vote_user_key"])
+        if identity.get("alt_vote_user_key")
+        else None
+    )
+
+    district_collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
+    district_collection = db[district_collection_name]
+
+    report = await district_collection.find_one({"_id": report_object_id})
+    if not report:
+        raise ValueError("Report not found")
+
+    voted_users = report.get("voted_users", [])
+    has_voted = vote_user_key in voted_users or (
+        alt_vote_user_key in voted_users if alt_vote_user_key else False
+    )
+    if not has_voted:
+        raise ValueError("User has not voted for this report")
+
+    pull_candidates = [vote_user_key]
+    if alt_vote_user_key and alt_vote_user_key != vote_user_key:
+        pull_candidates.append(alt_vote_user_key)
+
+    await district_collection.update_one(
+        {"_id": report_object_id},
+        {
+            "$inc": {"score": -1},
+            "$pull": {"voted_users": {"$in": pull_candidates}},
+            "$set": {"updated_at": datetime.now(timezone.utc)}
+        }
+    )
+
+    users_collection = db["users"]
+    await users_collection.update_one(
+        {"_id": identity["user_doc"]["_id"]},
+        {
+            "$pull": {
+                "voted_reports": {
+                    "report_id": str(report_object_id),
+                    "collection": district_collection_name,
+                }
+            }
+        }
+    )
+
+    current_score = max(0, report.get("score", 0))
+    new_score = current_score - 1 if current_score > 0 else 0
+
+    return {
+        "success": True,
+        "new_score": new_score,
+        "voted": False,
+        "district": district_name,
+        "message": "Vote removed successfully"
+    }
+
+
+async def has_user_voted(report_id: str, user_id: str, district_name: str):
+    db = get_async_database()
+
+    try:
+        report_object_id = ObjectId(report_id)
+    except Exception:
+        raise ValueError("Invalid report_id format")
+
+    identity = await _resolve_user_vote_keys(db, user_id)
+    vote_user_key = str(identity["vote_user_key"])
+    alt_vote_user_key = (
+        str(identity["alt_vote_user_key"])
+        if identity.get("alt_vote_user_key")
+        else None
+    )
+
+    district_collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
+    district_collection = db[district_collection_name]
+    report = await district_collection.find_one({"_id": report_object_id})
+    if not report:
+        raise ValueError("Report not found")
+
+    voted_users = report.get("voted_users", [])
+    voted = vote_user_key in voted_users or (
+        alt_vote_user_key in voted_users if alt_vote_user_key else False
+    )
+
+    return {
+        "success": True,
+        "voted": voted,
+        "score": report.get("score", 0),
+        "district": district_name,
     }
