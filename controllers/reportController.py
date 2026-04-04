@@ -12,6 +12,7 @@ from collections import defaultdict
 async def fetchReportsbyLocation(
         district_name: Optional[str] = None,
         province_name: Optional[str] = None,
+    user_id: Optional[str] = None,
         limit: int = 20,
         skip: int = 0,
         days: int = 30
@@ -34,6 +35,45 @@ async def fetchReportsbyLocation(
     # Calculate date threshold
     date_threshold = datetime.now(timezone.utc) - timedelta(days=days)
 
+    # Build vote lookup keys for has_voted flag
+    vote_keys = set()
+    if user_id:
+        users = db["users"]
+        user_doc = users.find_one({"appwrite_id": user_id})
+        if user_doc:
+            vote_keys.add(user_id)
+            vote_keys.add(str(user_doc.get("_id")))
+        else:
+            try:
+                from bson import ObjectId
+                object_id = ObjectId(user_id)
+                user_doc = users.find_one({"_id": object_id})
+                if user_doc:
+                    vote_keys.add(str(object_id))
+                    appwrite_id = user_doc.get("appwrite_id")
+                    if appwrite_id:
+                        vote_keys.add(appwrite_id)
+            except Exception:
+                # Ignore invalid ObjectId format here; has_voted will remain false.
+                pass
+
+    def serialize_report(report):
+        voted_users = report.get("voted_users", []) or []
+        has_voted = any(key in voted_users for key in vote_keys) if vote_keys else False
+        return {
+            "report_id": str(report["_id"]),
+            "user_id": report.get("user_id"),
+            "description": report.get("description"),
+            "district_info": report.get("district_info"),
+            "extracted_data": report.get("extracted_data"),
+            "week_number": report.get("week_number"),
+            "year": report.get("year"),
+            "status": report.get("status"),
+            "score": report.get("score", 0),
+            "has_voted": has_voted,
+            "created_at": report.get("created_at").isoformat() if report.get("created_at") else None,
+        }
+
     # Build query based on filters
     if district_name:
         # Query specific district collection
@@ -51,20 +91,7 @@ async def fetchReportsbyLocation(
             "limit": limit,
             "skip": skip,
             "district": district_name,
-            "reports": [
-                {
-                    "report_id": str(report["_id"]),
-                    "user_id": report.get("user_id"),
-                    "description": report.get("description"),
-                    "district_info": report.get("district_info"),
-                    "extracted_data": report.get("extracted_data"),
-                    "week_number": report.get("week_number"),
-                    "year": report.get("year"),
-                    "status": report.get("status"),
-                    "created_at": report.get("created_at").isoformat() if report.get("created_at") else None
-                }
-                for report in reports
-            ]
+            "reports": [serialize_report(report) for report in reports]
         }
 
     elif province_name:
@@ -98,20 +125,7 @@ async def fetchReportsbyLocation(
             "total": len(all_reports),
             "limit": limit,
             "skip": skip,
-            "reports": [
-                {
-                    "report_id": str(report["_id"]),
-                    "user_id": report.get("user_id"),
-                    "description": report.get("description"),
-                    "district_info": report.get("district_info"),
-                    "extracted_data": report.get("extracted_data"),
-                    "week_number": report.get("week_number"),
-                    "year": report.get("year"),
-                    "status": report.get("status"),
-                    "created_at": report.get("created_at").isoformat() if report.get("created_at") else None
-                }
-                for report in paginated_reports
-            ]
+            "reports": [serialize_report(report) for report in paginated_reports]
         }
 
     else:
@@ -139,20 +153,7 @@ async def fetchReportsbyLocation(
             "total": len(all_reports),
             "limit": limit,
             "skip": skip,
-            "reports": [
-                {
-                    "report_id": str(report["_id"]),
-                    "user_id": report.get("user_id"),
-                    "description": report.get("description"),
-                    "district_info": report.get("district_info"),
-                    "extracted_data": report.get("extracted_data"),
-                    "week_number": report.get("week_number"),
-                    "year": report.get("year"),
-                    "status": report.get("status"),
-                    "created_at": report.get("created_at").isoformat() if report.get("created_at") else None
-                }
-                for report in paginated_reports
-            ]
+            "reports": [serialize_report(report) for report in paginated_reports]
         }
 
 async def fetchHistoricalChartData(district_name: str):

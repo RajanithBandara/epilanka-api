@@ -5,8 +5,10 @@ All protected endpoints require a valid Appwrite JWT in Authorization: Bearer <j
 
 import uuid
 import os
+from urllib.parse import urlparse
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from botocore.exceptions import ClientError
 
 from controllers.userController import (
     get_or_create_user_profile,
@@ -14,6 +16,7 @@ from controllers.userController import (
     get_all_users_mongo,
     update_user_profile_mongo,
     update_profile_picture_mongo,
+    remove_profile_picture_mongo,
 )
 from utils.auth_deps import get_current_user, AppwriteUser
 from utils.r2_clients import r2_client, BUCKET_NAME, PUBLIC_BASE_URL
@@ -125,3 +128,37 @@ async def upload_profile_picture(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/profilepic", status_code=status.HTTP_200_OK)
+async def delete_profile_picture(user: AppwriteUser = Depends(get_current_user)):
+    profile = get_user_settings_mongo(user["$id"])
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    image_url = profile.get("profile_image")
+    if image_url:
+        object_key = ""
+
+        if PUBLIC_BASE_URL and image_url.startswith(PUBLIC_BASE_URL):
+            object_key = image_url[len(PUBLIC_BASE_URL):].lstrip("/")
+        else:
+            parsed = urlparse(image_url)
+            object_key = parsed.path.lstrip("/") if parsed.path else image_url.lstrip("/")
+
+        if object_key:
+            try:
+                r2_client.delete_object(Bucket=BUCKET_NAME, Key=object_key)
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "")
+                # Missing object in bucket should not block profile cleanup.
+                if error_code not in {"NoSuchKey", "404", "NotFound"}:
+                    raise HTTPException(status_code=500, detail=f"Failed to delete image from storage: {error_code}")
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Failed to delete image from storage: {exc}")
+
+    result = remove_profile_picture_mongo(user["$id"])
+    if result.get("msg") == "User not found":
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "Profile picture deleted"}

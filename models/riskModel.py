@@ -9,8 +9,12 @@ class RiskLevel(Base):
 
     risk_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     district_id = Column(Integer, ForeignKey("districts.district_id"), nullable=False)
+    disease_id = Column(Integer, ForeignKey("diseases.disease_id"), nullable=False)
     week_number = Column(Integer, nullable=False)
     year = Column(Integer, nullable=False)
     risk_level = Column(String, nullable=False)
+    lower_threshold = Column(Integer, nullable=False)
+    upper_threshold = Column(Integer, nullable=False)
+    outbreak_threshold = Column(Integer, nullable=False)
     risk_score = Column(Float, nullable=False)
     calculated_at = Column(DateTime, default=datetime.utcnow)
