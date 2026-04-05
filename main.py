@@ -22,6 +22,7 @@ from routes.mapRoute import router as map_router
 from routes.user_reportRoute import router as user_report_router
 from routes.reportRoute import router as report_router
 from routes.adminRoutes import router as admin_report_router
+from routes.officerRoute import router as officer_router
 
 API_KEY = os.getenv("API_SECRET_KEY")
 
@@ -97,3 +98,4 @@ app.include_router(map_router)
 app.include_router(user_report_router)
 app.include_router(report_router)
 app.include_router(admin_report_router)
+app.include_router(officer_router)
