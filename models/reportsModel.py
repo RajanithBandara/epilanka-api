@@ -12,3 +12,4 @@ class Report(Base):
     district_id = Column(Integer, ForeignKey("districts.district_id"), nullable=False)
     disease_id = Column(Integer, ForeignKey("diseases.disease_id"), nullable=False)
     case_count = Column(Integer, nullable=False)
+    actual_count = Column(Integer, nullable=True)

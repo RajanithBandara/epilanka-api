@@ -2,10 +2,11 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 from config.db import get_database
 from config.postgredb import AsyncSessionLocal
-from sqlalchemy import select
+from sqlalchemy import select, func
 from models.districtModel import District
 from models.historydataModel import HistoryData
 from models.diseaseModel import Disease
+from models.reportsModel import Report
 from collections import defaultdict
 
 
@@ -185,3 +186,155 @@ async def fetchHistoricalChartData(district_name: str):
                 grouped[key][disease_name] = count
                 
         return list(grouped.values())
+
+
+async def fetch_report_metadata():
+    """Return districts and diseases for report submission forms."""
+    async with AsyncSessionLocal() as session:
+        districts_result = await session.execute(
+            select(
+                District.district_id,
+                District.district_name,
+                District.province_name,
+                District.latitude,
+                District.longitude,
+            ).order_by(District.district_name)
+        )
+        diseases_result = await session.execute(
+            select(Disease.disease_id, Disease.disease_name).order_by(Disease.disease_name)
+        )
+
+        return {
+            "districts": [
+                {
+                    "district_id": row[0],
+                    "district_name": row[1],
+                    "province_name": row[2],
+                    "latitude": row[3],
+                    "longitude": row[4],
+                }
+                for row in districts_result.fetchall()
+            ],
+            "diseases": [
+                {"disease_id": row[0], "disease_name": row[1]}
+                for row in diseases_result.fetchall()
+            ],
+        }
+
+
+async def create_weekly_report(
+    week_number: int,
+    year: int,
+    district_id: int,
+    disease_id: int,
+    actual_count: int,
+    case_count: Optional[int] = None,
+):
+    """Update only actual_count for an existing predicted weekly row.
+
+    Matching key: week/year/district/disease.
+    case_count (predicted value) is never changed by this workflow.
+    """
+    async with AsyncSessionLocal() as session:
+        district = await session.get(District, district_id)
+        if not district:
+            raise ValueError(f"Invalid district_id: {district_id}")
+
+        disease = await session.get(Disease, disease_id)
+        if not disease:
+            raise ValueError(f"Invalid disease_id: {disease_id}")
+
+        existing_query = select(Report).where(
+            Report.week_number == week_number,
+            Report.year == year,
+            Report.district_id == district_id,
+            Report.disease_id == disease_id,
+        )
+        existing_report = (await session.execute(existing_query)).scalars().first()
+
+        if not existing_report:
+            raise ValueError(
+                "No predicted record found for the selected week, year, district, and disease"
+            )
+
+        existing_report.actual_count = actual_count
+        await session.commit()
+        await session.refresh(existing_report)
+
+        return {
+            "report_id": str(existing_report.report_id),
+            "week_number": existing_report.week_number,
+            "year": existing_report.year,
+            "district_id": existing_report.district_id,
+            "district_name": district.district_name,
+            "province_name": district.province_name,
+            "disease_id": existing_report.disease_id,
+            "disease_name": disease.disease_name,
+            "case_count": existing_report.case_count,
+            "actual_count": existing_report.actual_count,
+        }
+
+
+async def list_weekly_reports(
+    district_id: Optional[int] = None,
+    disease_id: Optional[int] = None,
+    week_number: Optional[int] = None,
+    year: Optional[int] = None,
+    limit: int = 20,
+    skip: int = 0,
+):
+    """List weekly reports with district and disease names."""
+    async with AsyncSessionLocal() as session:
+        filters = []
+        if district_id is not None:
+            filters.append(Report.district_id == district_id)
+        if disease_id is not None:
+            filters.append(Report.disease_id == disease_id)
+        if week_number is not None:
+            filters.append(Report.week_number == week_number)
+        if year is not None:
+            filters.append(Report.year == year)
+
+        total_query = select(func.count()).select_from(Report)
+        if filters:
+            total_query = total_query.where(*filters)
+        total = int((await session.execute(total_query)).scalar() or 0)
+
+        query = (
+            select(
+                Report,
+                District.district_name,
+                District.province_name,
+                Disease.disease_name,
+            )
+            .join(District, Report.district_id == District.district_id)
+            .join(Disease, Report.disease_id == Disease.disease_id)
+            .order_by(Report.year.desc(), Report.week_number.desc(), Report.report_id.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+        if filters:
+            query = query.where(*filters)
+
+        rows = (await session.execute(query)).all()
+
+        return {
+            "total": total,
+            "limit": limit,
+            "skip": skip,
+            "reports": [
+                {
+                    "report_id": str(report.report_id),
+                    "week_number": report.week_number,
+                    "year": report.year,
+                    "district_id": report.district_id,
+                    "district_name": district_name,
+                    "province_name": province_name,
+                    "disease_id": report.disease_id,
+                    "disease_name": disease_name,
+                    "case_count": report.case_count,
+                    "actual_count": report.actual_count,
+                }
+                for report, district_name, province_name, disease_name in rows
+            ],
+        }

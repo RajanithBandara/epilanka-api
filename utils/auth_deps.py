@@ -74,3 +74,20 @@ def get_current_admin(
             detail="Admin access required",
         )
     return user
+
+
+def get_current_officer(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> AppwriteUser:
+    """
+    Same as get_current_user but checks that the account has the
+    'officer' label set via Appwrite server-side Users API.
+    """
+    user = get_current_user(credentials)
+    labels = user.get("labels", [])
+    if "officer" not in labels:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Officer access required",
+        )
+    return user
