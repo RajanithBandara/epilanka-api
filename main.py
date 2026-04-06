@@ -15,6 +15,7 @@ from config.db import (
     close_mongodb_async_connection
 )
 from config.postgredb import close_postgres_connection
+from utils.redis_client import close_redis_connection
 
 from routes.userRoute import router as user_router
 from routes.diseaseRoute import router as disease_router
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
     close_mongodb_connection()  # Close sync MongoDB
     await close_mongodb_async_connection()  # Close async MongoDB
     await close_postgres_connection()  # Close PostgreSQL
+    await close_redis_connection()  # Close Redis client
     print("✅ All connections closed")
 
 from fastapi.responses import JSONResponse

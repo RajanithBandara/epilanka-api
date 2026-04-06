@@ -55,6 +55,10 @@ POSTGRE_PORT=5432
 POSTGRE_DBNAME=epilanka
 POSTGRE_USER=postgres
 POSTGRE_PASSWORD=your_password
+
+# Redis (optional, enables API caching)
+# Supports full URL (redis://...) or host:port format.
+REDIS_URL=redis://localhost:6379/0
 ```
 
 ### Installation
@@ -103,6 +107,11 @@ Once the server is running, you can access the interactive API documentation:
 
 ### Authentication Note
 All API requests (except for docs) require an `x-api-key` header for authentication.
+
+### Caching Note
+- `GET /reports/historical-chart` and `GET /reports/metadata` use Redis read-through caching.
+- Cache TTL is 7 days.
+- If Redis is unavailable, API falls back to direct DB reads.
 
 ## API Endpoints Summary
 

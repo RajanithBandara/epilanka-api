@@ -14,6 +14,16 @@ DB_NAME = os.getenv("POSTGRE_DBNAME")
 DB_USER = os.getenv("POSTGRE_USER")
 DB_PASSWORD = os.getenv("POSTGRE_PASSWORD")
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
 if not all([DB_NAME, DB_USER, DB_PASSWORD]):
     raise RuntimeError("DB_NAME, DB_USER and DB_PASSWORD environment variables must be set")
 
@@ -22,14 +32,21 @@ DATABASE_URL = (
     f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 )
 
+PG_POOL_SIZE = _env_int("POSTGRE_POOL_SIZE", 5)
+PG_MAX_OVERFLOW = _env_int("POSTGRE_MAX_OVERFLOW", 2)
+PG_POOL_TIMEOUT = _env_int("POSTGRE_POOL_TIMEOUT", 15)
+PG_POOL_RECYCLE = _env_int("POSTGRE_POOL_RECYCLE", 1800)
+
 # Async engine with proper connection pooling
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_size=20,  # Number of connections to maintain in the pool
-    max_overflow=10,  # Additional connections to create beyond pool_size
+    pool_size=PG_POOL_SIZE,
+    max_overflow=PG_MAX_OVERFLOW,
+    pool_timeout=PG_POOL_TIMEOUT,
     pool_pre_ping=True,  # Verify connections before using them
-    pool_recycle=3600,  # Recycle connections after 1 hour to avoid stale connections
+    pool_recycle=PG_POOL_RECYCLE,
+    pool_use_lifo=True,
     connect_args={
         "timeout": 10,
         "server_settings": {"application_name": "epilanka_api"}
@@ -53,10 +70,12 @@ sync_engine = create_engine(
     SYNC_DATABASE_URL,
     echo=False,
     poolclass=pool.QueuePool,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=PG_POOL_SIZE,
+    max_overflow=PG_MAX_OVERFLOW,
+    pool_timeout=PG_POOL_TIMEOUT,
     pool_pre_ping=True,
-    pool_recycle=3600,
+    pool_recycle=PG_POOL_RECYCLE,
+    pool_use_lifo=True,
 )
 
 SyncSessionLocal = sessionmaker(
@@ -83,12 +102,18 @@ def get_postgres_connection():
     try:
         yield db
     finally:
+        # Ensure any dangling transaction is closed before returning to pool.
+        try:
+            db.rollback()
+        except Exception:
+            pass
         db.close()
 
 
 async def close_postgres_connection() -> None:
     """Close PostgreSQL connections."""
     await engine.dispose()
-    print("✅ PostgreSQL async engine disposed")
+    sync_engine.dispose()
+    print("✅ PostgreSQL async/sync engines disposed")
 
 

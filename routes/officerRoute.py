@@ -6,13 +6,12 @@ from sqlalchemy.orm import Session
 
 from config.postgredb import get_postgres_connection
 from models.diseaseModel import Disease
-from models.districtModel import District
-from models.historydataModel import HistoryData
-from models.riskModel import RiskLevel
 from controllers.reportController import (
     fetch_report_metadata,
     create_weekly_report,
     list_weekly_reports,
+    fetch_officer_thresholds,
+    fetch_officer_history_pattern,
 )
 from utils.auth_deps import get_current_officer, AppwriteUser
 
@@ -165,111 +164,30 @@ async def officer_create_report(
 
 
 @router.get("/thresholds", status_code=200)
-def officer_get_thresholds(
+async def officer_get_thresholds(
     district_id: Optional[int] = Query(None),
     disease_id: Optional[int] = Query(None),
-    db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_officer),
 ):
-    query = (
-        db.query(RiskLevel, Disease.disease_name)
-        .join(Disease, RiskLevel.disease_id == Disease.disease_id)
-        .order_by(RiskLevel.year.desc(), RiskLevel.week_number.desc(), RiskLevel.calculated_at.desc())
-    )
-
-    if district_id is not None:
-        query = query.filter(RiskLevel.district_id == district_id)
-    if disease_id is not None:
-        query = query.filter(RiskLevel.disease_id == disease_id)
-
-    rows = query.all()
-
-    # Keep the latest threshold row per disease for clean charting.
-    latest_by_disease: dict[int, dict] = {}
-    for risk, disease_name in rows:
-        if risk.disease_id in latest_by_disease:
-            continue
-        latest_by_disease[risk.disease_id] = {
-            "risk_id": str(risk.risk_id),
-            "district_id": risk.district_id,
-            "disease_id": risk.disease_id,
-            "disease_name": disease_name,
-            "week_number": risk.week_number,
-            "year": risk.year,
-            "risk_level": risk.risk_level,
-            "lower_threshold": risk.lower_threshold,
-            "upper_threshold": risk.upper_threshold,
-            "outbreak_threshold": risk.outbreak_threshold,
-            "risk_score": risk.risk_score,
-            "calculated_at": risk.calculated_at.isoformat() if risk.calculated_at else None,
-        }
-
-    return {
-        "count": len(latest_by_disease),
-        "thresholds": sorted(latest_by_disease.values(), key=lambda x: x["disease_name"].lower()),
-    }
+    return await fetch_officer_thresholds(district_id=district_id, disease_id=disease_id)
 
 
 @router.get("/reports/history-pattern", status_code=200)
-def officer_get_history_pattern(
+async def officer_get_history_pattern(
     district_id: Optional[int] = Query(None),
     disease_id: Optional[int] = Query(None),
     year_from: Optional[int] = Query(None, ge=1900, le=2100),
     year_to: Optional[int] = Query(None, ge=1900, le=2100),
     limit: int = Query(400, ge=1, le=2000),
-    db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_officer),
 ):
-    query = (
-        db.query(
-            HistoryData.year,
-            HistoryData.week_number,
-            HistoryData.case_count,
-            HistoryData.disease_id,
-            Disease.disease_name,
-            HistoryData.district_id,
-            District.district_name,
-            District.province_name,
-        )
-        .join(Disease, HistoryData.disease_id == Disease.disease_id)
-        .join(District, HistoryData.district_id == District.district_id)
+    return await fetch_officer_history_pattern(
+        district_id=district_id,
+        disease_id=disease_id,
+        year_from=year_from,
+        year_to=year_to,
+        limit=limit,
     )
-
-    if district_id is not None:
-        query = query.filter(HistoryData.district_id == district_id)
-    if disease_id is not None:
-        query = query.filter(HistoryData.disease_id == disease_id)
-    if year_from is not None:
-        query = query.filter(HistoryData.year >= year_from)
-    if year_to is not None:
-        query = query.filter(HistoryData.year <= year_to)
-
-    rows = (
-        query.order_by(HistoryData.year.desc(), HistoryData.week_number.desc())
-        .limit(limit)
-        .all()
-    )
-
-    records = [
-        {
-            "year": row[0],
-            "week_number": row[1],
-            "case_count": row[2],
-            "disease_id": row[3],
-            "disease_name": row[4],
-            "district_id": row[5],
-            "district_name": row[6],
-            "province_name": row[7],
-        }
-        for row in rows
-    ]
-
-    records.reverse()
-
-    return {
-        "count": len(records),
-        "records": records,
-    }
 
 
 class OfficerNameUpdate(BaseModel):

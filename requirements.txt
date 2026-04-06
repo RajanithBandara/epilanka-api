@@ -20,3 +20,4 @@ motor
 PyJWT
 boto3
 appwrite
+redis

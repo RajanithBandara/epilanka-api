@@ -95,11 +95,10 @@ async def get_risk_levels_lookup(session, week_number: int, year: int) -> dict[t
     return latest_lookup
 
 
-async def get_all_diseases():
-    async with AsyncSessionLocal() as session:
-        query = select(Disease.disease_id, Disease.disease_name)
-        result = await session.execute(query)
-        return result.all()
+async def get_all_diseases(session):
+    query = select(Disease.disease_id, Disease.disease_name)
+    result = await session.execute(query)
+    return result.all()
 
 
 async def get_nearest_area_with_risk_levels(lat, lng):
@@ -108,7 +107,7 @@ async def get_nearest_area_with_risk_levels(lat, lng):
         risk_levels_lookup = await get_risk_levels_lookup(session, current_week, current_year)
 
         # Fetch all diseases
-        diseases = await get_all_diseases()
+        diseases = await get_all_diseases(session)
 
         distance_expr = func.sqrt(
             func.pow(District.longitude - lng, 2) +
@@ -282,7 +281,7 @@ async def get_all_districts_with_risks(target_date: date | None = None):
         risk_levels_lookup = await get_risk_levels_lookup(session, current_week, current_year)
 
         # Fetch all diseases
-        diseases = await get_all_diseases()
+        diseases = await get_all_diseases(session)
 
         # Build select columns
         select_columns = [

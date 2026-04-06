@@ -7,7 +7,22 @@ from models.districtModel import District
 from models.historydataModel import HistoryData
 from models.diseaseModel import Disease
 from models.reportsModel import Report
+from models.riskModel import RiskLevel
 from collections import defaultdict
+from utils.redis_client import (
+    cache_get_json,
+    cache_set_json,
+    cache_delete_pattern,
+    DEFAULT_CACHE_TTL_SECONDS,
+)
+
+
+def _cache_key_safe(value: str) -> str:
+    return "_".join(value.strip().lower().split())
+
+
+def _cache_key_value(value: Optional[int]) -> str:
+    return "all" if value is None else str(value)
 
 
 async def fetchReportsbyLocation(
@@ -161,6 +176,12 @@ async def fetchHistoricalChartData(district_name: str):
     """
     Fetch historical disease case data formatted for charts by district.
     """
+    district_key = _cache_key_safe(district_name)
+    cache_key = f"reports:historical-chart:v1:{district_key}"
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
     async with AsyncSessionLocal() as session:
         query = (
             select(HistoryData.year, HistoryData.week_number, Disease.disease_name, HistoryData.case_count)
@@ -184,12 +205,19 @@ async def fetchHistoricalChartData(district_name: str):
                 grouped[key][disease_name] += count
             else:
                 grouped[key][disease_name] = count
-                
-        return list(grouped.values())
+
+        response = list(grouped.values())
+        await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
+        return response
 
 
 async def fetch_report_metadata():
     """Return districts and diseases for report submission forms."""
+    cache_key = "reports:metadata:v1"
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
     async with AsyncSessionLocal() as session:
         districts_result = await session.execute(
             select(
@@ -204,7 +232,7 @@ async def fetch_report_metadata():
             select(Disease.disease_id, Disease.disease_name).order_by(Disease.disease_name)
         )
 
-        return {
+        response = {
             "districts": [
                 {
                     "district_id": row[0],
@@ -220,6 +248,8 @@ async def fetch_report_metadata():
                 for row in diseases_result.fetchall()
             ],
         }
+        await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
+        return response
 
 
 async def create_weekly_report(
@@ -261,6 +291,9 @@ async def create_weekly_report(
         await session.commit()
         await session.refresh(existing_report)
 
+        # Weekly analytics depend on this table, so clear cached slices.
+        await cache_delete_pattern("reports:weekly-records:v1:*")
+
         return {
             "report_id": str(existing_report.report_id),
             "week_number": existing_report.week_number,
@@ -284,6 +317,18 @@ async def list_weekly_reports(
     skip: int = 0,
 ):
     """List weekly reports with district and disease names."""
+    cache_key = (
+        "reports:weekly-records:v1:"
+        f"district:{_cache_key_value(district_id)}:"
+        f"disease:{_cache_key_value(disease_id)}:"
+        f"week:{_cache_key_value(week_number)}:"
+        f"year:{_cache_key_value(year)}:"
+        f"limit:{limit}:skip:{skip}"
+    )
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
     async with AsyncSessionLocal() as session:
         filters = []
         if district_id is not None:
@@ -318,7 +363,7 @@ async def list_weekly_reports(
 
         rows = (await session.execute(query)).all()
 
-        return {
+        response = {
             "total": total,
             "limit": limit,
             "skip": skip,
@@ -338,3 +383,132 @@ async def list_weekly_reports(
                 for report, district_name, province_name, disease_name in rows
             ],
         }
+        await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
+        return response
+
+
+async def fetch_officer_thresholds(
+    district_id: Optional[int] = None,
+    disease_id: Optional[int] = None,
+):
+    cache_key = (
+        "officer:analytics:thresholds:v1:"
+        f"district:{_cache_key_value(district_id)}:"
+        f"disease:{_cache_key_value(disease_id)}"
+    )
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    async with AsyncSessionLocal() as session:
+        query = (
+            select(RiskLevel, Disease.disease_name)
+            .join(Disease, RiskLevel.disease_id == Disease.disease_id)
+            .order_by(RiskLevel.year.desc(), RiskLevel.week_number.desc(), RiskLevel.calculated_at.desc())
+        )
+
+        if district_id is not None:
+            query = query.where(RiskLevel.district_id == district_id)
+        if disease_id is not None:
+            query = query.where(RiskLevel.disease_id == disease_id)
+
+        rows = (await session.execute(query)).all()
+
+        latest_by_disease: dict[int, dict] = {}
+        for risk, disease_name in rows:
+            if risk.disease_id in latest_by_disease:
+                continue
+            latest_by_disease[risk.disease_id] = {
+                "risk_id": str(risk.risk_id),
+                "district_id": risk.district_id,
+                "disease_id": risk.disease_id,
+                "disease_name": disease_name,
+                "week_number": risk.week_number,
+                "year": risk.year,
+                "risk_level": risk.risk_level,
+                "lower_threshold": risk.lower_threshold,
+                "upper_threshold": risk.upper_threshold,
+                "outbreak_threshold": risk.outbreak_threshold,
+                "risk_score": risk.risk_score,
+                "calculated_at": risk.calculated_at.isoformat() if risk.calculated_at else None,
+            }
+
+        response = {
+            "count": len(latest_by_disease),
+            "thresholds": sorted(latest_by_disease.values(), key=lambda x: x["disease_name"].lower()),
+        }
+        await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
+        return response
+
+
+async def fetch_officer_history_pattern(
+    district_id: Optional[int] = None,
+    disease_id: Optional[int] = None,
+    year_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+    limit: int = 400,
+):
+    cache_key = (
+        "officer:analytics:history-pattern:v1:"
+        f"district:{_cache_key_value(district_id)}:"
+        f"disease:{_cache_key_value(disease_id)}:"
+        f"from:{_cache_key_value(year_from)}:"
+        f"to:{_cache_key_value(year_to)}:"
+        f"limit:{limit}"
+    )
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    async with AsyncSessionLocal() as session:
+        query = (
+            select(
+                HistoryData.year,
+                HistoryData.week_number,
+                HistoryData.case_count,
+                HistoryData.disease_id,
+                Disease.disease_name,
+                HistoryData.district_id,
+                District.district_name,
+                District.province_name,
+            )
+            .join(Disease, HistoryData.disease_id == Disease.disease_id)
+            .join(District, HistoryData.district_id == District.district_id)
+        )
+
+        if district_id is not None:
+            query = query.where(HistoryData.district_id == district_id)
+        if disease_id is not None:
+            query = query.where(HistoryData.disease_id == disease_id)
+        if year_from is not None:
+            query = query.where(HistoryData.year >= year_from)
+        if year_to is not None:
+            query = query.where(HistoryData.year <= year_to)
+
+        rows = (
+            (await session.execute(query.order_by(HistoryData.year.desc(), HistoryData.week_number.desc()).limit(limit)))
+            .all()
+        )
+
+        records = [
+            {
+                "year": row[0],
+                "week_number": row[1],
+                "case_count": row[2],
+                "disease_id": row[3],
+                "disease_name": row[4],
+                "district_id": row[5],
+                "district_name": row[6],
+                "province_name": row[7],
+            }
+            for row in rows
+        ]
+
+        records.reverse()
+
+        response = {
+            "count": len(records),
+            "records": records,
+        }
+        await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
+        return response
