@@ -24,6 +24,7 @@ from routes.user_reportRoute import router as user_report_router
 from routes.reportRoute import router as report_router
 from routes.adminRoutes import router as admin_report_router
 from routes.officerRoute import router as officer_router
+from routes.notificationRoute import router as notification_router
 
 API_KEY = os.getenv("API_SECRET_KEY")
 
@@ -77,6 +78,10 @@ async def api_key_protect(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
+    # Allow WebSocket connections to bypass API key check (auth is via JWT in URL)
+    if request.url.path.startswith("/notifications/ws/"):
+        return await call_next(request)
+
     client_key = request.headers.get("x-api-key")
 
     if not client_key:
@@ -101,3 +106,4 @@ app.include_router(user_report_router)
 app.include_router(report_router)
 app.include_router(admin_report_router)
 app.include_router(officer_router)
+app.include_router(notification_router)

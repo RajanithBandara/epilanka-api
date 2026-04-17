@@ -1,10 +1,12 @@
 fastapi
 uvicorn[standard]
+websockets
 pymongo
 python-dotenv
 argon2-cffi
 pydantic[email]
 sqlalchemy[asyncio]
+alembic
 asyncpg
 psycopg2-binary
 python-jose[cryptography]
@@ -19,5 +21,6 @@ flask
 motor
 PyJWT
 boto3
+botocore
 appwrite
 redis
