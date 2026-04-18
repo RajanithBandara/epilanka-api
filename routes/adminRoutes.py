@@ -7,6 +7,10 @@ from config.postgredb import get_postgres_connection
 from controllers.adminController import (
     admin_register_appwrite,
     get_all_admins_appwrite,
+    officer_register_appwrite,
+    get_all_officers_appwrite,
+    delete_admin_appwrite,
+    delete_officer_appwrite,
     ban_users_mongo,
     view_banned_users_mongo,
     view_user_activity_mongo,
@@ -48,6 +52,51 @@ def register_admin(request: AdminRegisterRequest):
 @router.get("/list", status_code=status.HTTP_200_OK)
 def list_admins(current: AppwriteUser = Depends(get_current_admin)):
     return {"admins": get_all_admins_appwrite()}
+
+
+@router.delete("/admins/{admin_id}", status_code=status.HTTP_200_OK)
+def remove_admin(admin_id: str, current: AppwriteUser = Depends(get_current_admin)):
+    """Remove an admin account from Appwrite (strips the admin label)."""
+    if current.get("$id") == admin_id:
+        raise HTTPException(status_code=400, detail="Cannot remove your own admin account")
+    result = delete_admin_appwrite(admin_id)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["msg"])
+    return result
+
+
+# ── Officer management ───────────────────────────────────────────────────────
+
+class OfficerRegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+
+
+@router.post("/register-officer", status_code=status.HTTP_201_CREATED)
+def register_officer(
+    request: OfficerRegisterRequest,
+    current: AppwriteUser = Depends(get_current_admin),
+):
+    """Create a new health-officer Appwrite account and label them 'officer'."""
+    result = officer_register_appwrite(request.email, request.password, request.name)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["msg"])
+    return result
+
+
+@router.get("/officers", status_code=status.HTTP_200_OK)
+def list_officers(current: AppwriteUser = Depends(get_current_admin)):
+    return {"officers": get_all_officers_appwrite()}
+
+
+@router.delete("/officers/{officer_id}", status_code=status.HTTP_200_OK)
+def remove_officer(officer_id: str, current: AppwriteUser = Depends(get_current_admin)):
+    """Remove an officer account from Appwrite (strips the officer label)."""
+    result = delete_officer_appwrite(officer_id)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["msg"])
+    return result
 
 
 # ── User management ──────────────────────────────────────────────────────────

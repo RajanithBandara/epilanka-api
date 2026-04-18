@@ -56,7 +56,7 @@ def admin_register_appwrite(email: str, password: str, name: str) -> Dict[str, A
 
     # Apply 'admin' label
     try:
-        users_service.update_labels(user["$id"], ["admin"])
+        users_service.update_labels(user.id, ["admin"])
     except AppwriteException as exc:
         return {"msg": f"User created but failed to set admin label: {exc.message}", "error": True}
 
@@ -65,15 +65,15 @@ def admin_register_appwrite(email: str, password: str, name: str) -> Dict[str, A
     admins_col = db["admins"]
     now = datetime.now(timezone.utc)
     admins_col.update_one(
-        {"appwrite_id": user["$id"]},
-        {"$set": {"appwrite_id": user["$id"], "email": email, "name": name, "updated_at": now},
+        {"appwrite_id": user.id},
+        {"$set": {"appwrite_id": user.id, "email": email, "name": name, "updated_at": now},
          "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
 
     return {
         "msg": "Admin registered successfully",
-        "admin_id": user["$id"],
+        "admin_id": user.id,
         "email": email,
         "name": name,
         "error": False,
@@ -85,10 +85,77 @@ def get_all_admins_appwrite() -> list:
     users_service = get_users_service()
     try:
         result = users_service.list()
-        admins = [u for u in result["users"] if "admin" in u.get("labels", [])]
+        admins = [u for u in result.users if "admin" in (getattr(u, "labels", None) or [])]
         return admins
-    except AppwriteException as exc:
+    except AppwriteException:
         return []
+
+
+def officer_register_appwrite(email: str, password: str, name: str) -> Dict[str, Any]:
+    """
+    Create a new officer user in Appwrite and tag them with the 'officer' label.
+    """
+    users_service = get_users_service()
+
+    try:
+        user = users_service.create(
+            user_id=ID.unique(),
+            email=email,
+            password=password,
+            name=name,
+        )
+    except AppwriteException as exc:
+        if "already" in str(exc.message).lower():
+            return {"msg": "Email already registered", "error": True}
+        return {"msg": str(exc.message), "error": True}
+
+    try:
+        users_service.update_labels(user.id, ["officer"])
+    except AppwriteException as exc:
+        return {"msg": f"User created but failed to set officer label: {exc.message}", "error": True}
+
+    return {
+        "msg": "Officer registered successfully",
+        "officer_id": user.id,
+        "email": email,
+        "name": name,
+        "error": False,
+    }
+
+
+def get_all_officers_appwrite() -> list:
+    """List all Appwrite users who have the 'officer' label."""
+    users_service = get_users_service()
+    try:
+        result = users_service.list()
+        officers = [u for u in result.users if "officer" in (getattr(u, "labels", None) or [])]
+        return officers
+    except AppwriteException:
+        return []
+
+
+def delete_admin_appwrite(admin_id: str) -> Dict[str, Any]:
+    """Strip the 'admin' label from an Appwrite user (does NOT delete the account)."""
+    users_service = get_users_service()
+    try:
+        user = users_service.get(admin_id)
+        labels = [lbl for lbl in (getattr(user, "labels", None) or []) if lbl != "admin"]
+        users_service.update_labels(admin_id, labels)
+        return {"msg": "Admin label removed successfully", "error": False}
+    except AppwriteException as exc:
+        return {"msg": str(exc.message), "error": True}
+
+
+def delete_officer_appwrite(officer_id: str) -> Dict[str, Any]:
+    """Strip the 'officer' label from an Appwrite user (does NOT delete the account)."""
+    users_service = get_users_service()
+    try:
+        user = users_service.get(officer_id)
+        labels = [lbl for lbl in (getattr(user, "labels", None) or []) if lbl != "officer"]
+        users_service.update_labels(officer_id, labels)
+        return {"msg": "Officer label removed successfully", "error": False}
+    except AppwriteException as exc:
+        return {"msg": str(exc.message), "error": True}
 
 
 # ── Legacy MongoDB user management (ban, activity, delete) ────────────────
