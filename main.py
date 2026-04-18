@@ -2,6 +2,7 @@ import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
+import socketio
 
 load_dotenv()
 
@@ -25,6 +26,7 @@ from routes.reportRoute import router as report_router
 from routes.adminRoutes import router as admin_report_router
 from routes.officerRoute import router as officer_router
 from routes.notificationRoute import router as notification_router
+from utils.websocket_manager import sio
 
 API_KEY = os.getenv("API_SECRET_KEY")
 
@@ -48,7 +50,7 @@ async def lifespan(app: FastAPI):
 
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Epilanka API", lifespan=lifespan)
+fastapi_app = FastAPI(title="Epilanka API", lifespan=lifespan)
 
 # CORS Middleware — allow the frontend origins
 _frontend = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -60,7 +62,7 @@ _allowed_origins = [
     "https://www.epilanka.app",
 ]
 
-app.add_middleware(
+fastapi_app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=True,
@@ -68,7 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
+@fastapi_app.middleware("http")
 async def api_key_protect(request: Request, call_next):
     # Allow Swagger docs
     if request.url.path in ["/docs", "/openapi.json", "/redoc"]:
@@ -78,8 +80,8 @@ async def api_key_protect(request: Request, call_next):
     if request.method == "OPTIONS":
         return await call_next(request)
 
-    # Allow WebSocket connections to bypass API key check (auth is via JWT in URL)
-    if request.url.path.startswith("/notifications/ws/"):
+    # Allow Socket.IO handshake and polling transport requests.
+    if request.url.path.startswith("/socket.io"):
         return await call_next(request)
 
     client_key = request.headers.get("x-api-key")
@@ -99,11 +101,17 @@ async def api_key_protect(request: Request, call_next):
     return await call_next(request)
 
 # Route Includes
-app.include_router(user_router)
-app.include_router(disease_router)
-app.include_router(map_router)
-app.include_router(user_report_router)
-app.include_router(report_router)
-app.include_router(admin_report_router)
-app.include_router(officer_router)
-app.include_router(notification_router)
+fastapi_app.include_router(user_router)
+fastapi_app.include_router(disease_router)
+fastapi_app.include_router(map_router)
+fastapi_app.include_router(user_report_router)
+fastapi_app.include_router(report_router)
+fastapi_app.include_router(admin_report_router)
+fastapi_app.include_router(officer_router)
+fastapi_app.include_router(notification_router)
+
+app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
+
+# Backward compatibility: existing run commands may still use `main:fastapi_app`.
+# Point it to the wrapped ASGI app so Socket.IO remains available.
+fastapi_app = app
