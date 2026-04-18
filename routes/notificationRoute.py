@@ -1,11 +1,9 @@
 """
-Notification Routes - REST API and WebSocket endpoints
-Handles notifications: listing, marking as read, WebSocket subscriptions
+Notification Routes - REST API endpoints.
+Handles notification CRUD and read state operations.
 """
 
-import os
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 from controllers.notificationController import (
     create_notification,
@@ -16,16 +14,39 @@ from controllers.notificationController import (
     mark_all_notifications_as_read,
     get_unread_count,
     delete_notification,
-    broadcast_notification_to_all,
 )
-from models.notificationModel import NotificationCreate, NotificationResponse, NotificationUpdate
+from models.notificationModel import NotificationCreate, NotificationUpdate
 from utils.auth_deps import get_current_user, AppwriteUser
-from utils.appwrite_client import get_account_service
 from utils.websocket_manager import notification_manager
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-API_KEY = os.getenv("API_SECRET_KEY")
+
+def _serialize_notification(notification: dict | None) -> dict | None:
+    if not notification:
+        return None
+
+    return {
+        "_id": notification.get("_id"),
+        "notification_id": notification.get("notification_id"),
+        "text": notification.get("text"),
+        "severity": notification.get("severity"),
+        "user_id": notification.get("user_id"),
+        "created_at": notification.get("created_at").isoformat() if notification.get("created_at") else None,
+        "read": bool(notification.get("read", False)),
+        "read_at": notification.get("read_at").isoformat() if notification.get("read_at") else None,
+        "metadata": notification.get("metadata") or {},
+    }
+
+
+async def _emit_notification_event(event_name: str, payload: dict):
+    target_user_id = payload.get("user_id")
+
+    if target_user_id:
+        await notification_manager.broadcast_to_user(target_user_id, payload, event_name=event_name)
+        return
+
+    await notification_manager.broadcast_to_all(payload, event_name=event_name)
 
 
 # ── REST API Endpoints ──────────────────────────────────────────────────────
@@ -47,29 +68,11 @@ async def create_new_notification(
         )
         
         created = create_notification(notification_obj)
+
+        emit_payload = _serialize_notification(created)
         
-        # Broadcast via WebSocket
-        if notification_obj.user_id:
-            # Send to specific user
-            await notification_manager.broadcast_to_user(
-                notification_obj.user_id,
-                {
-                    "_id": created.get("_id"),
-                    "notification_id": created.get("notification_id"),
-                    "text": created.get("text"),
-                    "severity": created.get("severity"),
-                    "created_at": created.get("created_at").isoformat() if created.get("created_at") else None,
-                }
-            )
-        else:
-            # Broadcast to all
-            await notification_manager.broadcast_to_all({
-                "_id": created.get("_id"),
-                "notification_id": created.get("notification_id"),
-                "text": created.get("text"),
-                "severity": created.get("severity"),
-                "created_at": created.get("created_at").isoformat() if created.get("created_at") else None,
-            })
+        # Broadcast via Socket.IO
+        await _emit_notification_event("notification", emit_payload)
         
         return {
             "message": "Notification created successfully",
@@ -178,7 +181,15 @@ async def update_single_notification(
                 detail="Notification not found or no changes applied"
             )
 
-        return {"message": "Notification updated"}
+        updated_notification = get_notification_by_id(notification_id, user["$id"])
+        emit_payload = _serialize_notification(updated_notification)
+        if emit_payload:
+            await _emit_notification_event("notification_updated", emit_payload)
+
+        return {
+            "message": "Notification updated",
+            "notification": updated_notification,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -218,6 +229,7 @@ async def delete_single_notification(
     Delete a specific notification
     """
     try:
+        notification = get_notification_by_id(notification_id, user["$id"])
         success = delete_notification(notification_id, user["$id"])
         
         if not success:
@@ -226,6 +238,12 @@ async def delete_single_notification(
                 detail="Notification not found"
             )
         
+        emit_payload = {
+            "notification_id": notification_id,
+            "user_id": notification.get("user_id") if notification else None,
+        }
+        await _emit_notification_event("notification_deleted", emit_payload)
+
         return {"message": "Notification deleted"}
     except HTTPException:
         raise
@@ -236,46 +254,4 @@ async def delete_single_notification(
         )
 
 
-# ── WebSocket Endpoint ──────────────────────────────────────────────────────
-
-
-@router.websocket("/ws/{token}")
-async def websocket_endpoint(websocket: WebSocket, token: str):
-    """
-    WebSocket endpoint for real-time notifications
-    Client connects with JWT token: ws://localhost:8000/notifications/ws/{jwt_token}
-    """
-    try:
-        # Verify Appwrite JWT and extract user ID
-        account = get_account_service(token)
-        user_obj = account.get()
-        user_id = getattr(user_obj, "id", None) or getattr(user_obj, "$id", None)
-        
-        if not user_id:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-        
-        # Register the connection
-        await notification_manager.connect(websocket, user_id)
-        
-        # Send initial connection message
-        await notification_manager.send_status_update(user_id)
-        
-        # Keep the connection alive and listen for disconnections
-        try:
-            while True:
-                # Wait for messages from client (heartbeat/keepalive)
-                data = await websocket.receive_text()
-
-                if data == "ping":
-                    await websocket.send_text("pong")
-        
-        except WebSocketDisconnect:
-            notification_manager.disconnect(websocket, user_id)
-    
-    except Exception as e:
-        try:
-            await websocket.close(code=status.WS_1011_SERVER_ERROR)
-        except:
-            pass
-        print(f"WebSocket error: {e}")
+# Socket.IO endpoint is mounted globally at /socket.io by main.py.
