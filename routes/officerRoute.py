@@ -12,6 +12,7 @@ from controllers.reportController import (
     list_weekly_reports,
     fetch_officer_thresholds,
     fetch_officer_history_pattern,
+    bulk_upsert_weekly_reports,
 )
 from utils.auth_deps import get_current_officer, AppwriteUser
 
@@ -36,6 +37,18 @@ class OfficerWeeklyReportCreate(BaseModel):
     disease_id: int
     actual_count: int = Field(..., ge=0)
     case_count: Optional[int] = Field(None, ge=0)
+
+
+class BulkDistrictEntry(BaseModel):
+    district_id: int
+    actual_count: int = Field(..., ge=0)
+
+
+class OfficerBulkReportUpdate(BaseModel):
+    week_number: int = Field(..., ge=1, le=53)
+    year: int = Field(..., ge=1900, le=2100)
+    disease_id: int
+    entries: list[BulkDistrictEntry] = Field(..., min_length=1)
 
 
 @router.get("/diseases", status_code=200)
@@ -158,6 +171,23 @@ async def officer_create_report(
             disease_id=payload.disease_id,
             actual_count=payload.actual_count,
             case_count=payload.case_count,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/reports/bulk", status_code=200)
+async def officer_bulk_update_reports(
+    payload: OfficerBulkReportUpdate,
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    """Bulk-update actual_count for multiple districts in a single query."""
+    try:
+        return await bulk_upsert_weekly_reports(
+            week_number=payload.week_number,
+            year=payload.year,
+            disease_id=payload.disease_id,
+            entries=[e.model_dump() for e in payload.entries],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

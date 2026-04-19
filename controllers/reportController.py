@@ -1,8 +1,8 @@
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timezone, timedelta
 from config.db import get_database
 from config.postgredb import AsyncSessionLocal
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from models.districtModel import District
 from models.historydataModel import HistoryData
 from models.diseaseModel import Disease
@@ -305,6 +305,82 @@ async def create_weekly_report(
             "disease_name": disease.disease_name,
             "case_count": existing_report.case_count,
             "actual_count": existing_report.actual_count,
+        }
+
+
+async def bulk_upsert_weekly_reports(
+    week_number: int,
+    year: int,
+    disease_id: int,
+    entries: List[dict],
+) -> dict:
+    """
+    Upsert actual_count for multiple districts in one INSERT ... ON CONFLICT query.
+
+    `entries` is a list of {district_id: int, actual_count: int}.
+    Only rows where the predicted record already exists are updated;
+    rows with no matching predicted record are skipped and reported back.
+    """
+    if not entries:
+        return {"updated": 0, "skipped": [], "message": "No entries provided"}
+
+    # Build a VALUES list and update each actual_count where the row exists.
+    # We use a raw SQL ON CONFLICT targeting the natural key so this is a
+    # single round-trip regardless of how many districts are submitted.
+    async with AsyncSessionLocal() as session:
+        # Collect district ids that actually have a predicted record for this
+        # week/year/disease combination so we can report skipped ones.
+        existing_query = select(Report.district_id).where(
+            Report.week_number == week_number,
+            Report.year == year,
+            Report.disease_id == disease_id,
+            Report.district_id.in_([e["district_id"] for e in entries]),
+        )
+        existing_district_ids = set(
+            (await session.execute(existing_query)).scalars().all()
+        )
+
+        rows_to_update = [
+            e for e in entries if e["district_id"] in existing_district_ids
+        ]
+        skipped_ids = [
+            e["district_id"] for e in entries if e["district_id"] not in existing_district_ids
+        ]
+
+        if rows_to_update:
+            # Build parameterised SQL for bulk update
+            cases = " ".join(
+                f"WHEN district_id = {row['district_id']} THEN {int(row['actual_count'])}"
+                for row in rows_to_update
+            )
+            district_ids_str = ", ".join(str(row["district_id"]) for row in rows_to_update)
+
+            stmt = text(
+                f"""
+                UPDATE reports
+                SET actual_count = CASE {cases} END
+                WHERE week_number = :week_number
+                  AND year       = :year
+                  AND disease_id = :disease_id
+                  AND district_id IN ({district_ids_str})
+                """
+            )
+            await session.execute(
+                stmt,
+                {"week_number": week_number, "year": year, "disease_id": disease_id},
+            )
+            await session.commit()
+
+        # Bust related cache entries.
+        await cache_delete_pattern("reports:weekly-records:v1:*")
+
+        return {
+            "updated": len(rows_to_update),
+            "skipped": skipped_ids,
+            "message": (
+                f"{len(rows_to_update)} record(s) updated."
+                + (f" {len(skipped_ids)} district(s) had no predicted record and were skipped." if skipped_ids else "")
+            ),
         }
 
 
