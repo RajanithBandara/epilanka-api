@@ -1,29 +1,32 @@
 # Epilanka API
 
-Epilanka API is a robust backend service built with FastAPI, designed to manage disease-related reports, user authentication, and geographical mapping for the Epilanka platform. It utilizes a dual-database system (MongoDB and PostgreSQL) to ensure efficient data management and scalability.
+Epilanka API is a robust backend service built with FastAPI, designed to manage disease-related reports, user profiles, and geographical mapping for the Epilanka platform. It utilizes a multi-database architecture and integrates with various modern services for authentication, storage, and real-time communication.
 
 ## Features
 
-- **User Management**: Secure registration, login, and profile editing with JWT-based authentication and Argon2 password hashing.
-- **Disease Data CRUD**: Manage disease information including names and descriptions.
-- **Reporting System**: Submit and process user reports related to disease occurrences.
-- **Geographical Mapping**: Fetch nearest areas/locations based on coordinates.
+- **User Management**: Profile management synchronized with Appwrite authentication.
+- **Disease Data CRUD**: Manage disease information including names, descriptions, and thresholds.
+- **Reporting System**: Submit and process disease occurrences with image support (stored in R2).
+- **Geographical Mapping**: Coordinate-based location services and population density data.
+- **Real-time Notifications**: Live updates via Socket.IO for critical alerts.
 - **Security**: 
-  - API Key protection for all endpoints (via `x-api-key` header).
-  - CORS middleware for frontend integration.
-  - JWT token-based authentication for user-specific operations.
+  - `x-api-key` protection for all endpoints.
+  - JWT-based authorization (via Appwrite).
+  - CORS middleware for secure frontend integration.
 - **Database Migrations**: PostgreSQL schema management using Alembic.
-- **Containerization**: Fully dockerized for easy deployment.
+- **Caching**: Performance optimization using Redis for heavy read operations.
+- **Containerization**: Fully dockerized for consistent development and deployment.
 
 ## Technologies Used
 
 - **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
+- **Real-time**: [python-socketio](https://python-socketio.readthedocs.io/) (Socket.IO)
 - **Databases**: 
-  - [MongoDB](https://www.mongodb.com/) (using Pymongo)
-  - [PostgreSQL](https://www.postgresql.org/) (using SQLAlchemy & asyncpg)
-- **Security**: 
-  - [Argon2](https://argon2-cffi.readthedocs.io/) (Password Hashing)
-  - [PyJWT](https://pyjwt.readthedocs.io/) (Token Management)
+  - [MongoDB](https://www.mongodb.com/) (Pymongo & Motor for async) — Profile & unstructured data.
+  - [PostgreSQL](https://www.postgresql.org/) (SQLAlchemy & asyncpg) — Relational data & reporting.
+  - [Redis](https://redis.io/) — Read-through caching.
+- **Authentication**: [Appwrite](https://appwrite.io/)
+- **Storage**: [Cloudflare R2](https://www.cloudflare.com/products/r2/) (S3-compatible) — Image uploads.
 - **Migrations**: [Alembic](https://alembic.sqlalchemy.org/)
 - **Containerization**: Docker & Docker Compose
 
@@ -34,20 +37,22 @@ Epilanka API is a robust backend service built with FastAPI, designed to manage 
 - Python 3.9+
 - MongoDB instance (local or Atlas)
 - PostgreSQL instance
+- Redis instance (optional, for caching)
+- Appwrite Project (for authentication)
+- Cloudflare R2 Bucket (for image storage)
 - Docker & Docker Compose (optional)
 
 ### Environment Variables
 
-Create a `.env` file in the root directory and configure the following variables:
+Create a `.env` file in the root directory and configure the following:
 
 ```env
 # General
-API_SECRET_KEY=your_api_key_here
-JWT_SECRET=your_jwt_secret_here
+API_SECRET_KEY=your_shared_api_key
 FRONTEND_URL=http://localhost:3000
 
 # MongoDB
-MONGODB_URI=mongodb://localhost:27017/epilanka
+MONGODB_URI=mongodb+srv://...
 
 # PostgreSQL
 POSTGRE_HOST=localhost
@@ -56,9 +61,20 @@ POSTGRE_DBNAME=epilanka
 POSTGRE_USER=postgres
 POSTGRE_PASSWORD=your_password
 
-# Redis (optional, enables API caching)
-# Supports full URL (redis://...) or host:port format.
+# Redis (Optional)
 REDIS_URL=redis://localhost:6379/0
+
+# Appwrite
+APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_PROJECT_ID=your_project_id
+APPWRITE_API_KEY=your_server_api_key
+
+# Cloudflare R2
+R2_ACCOUNT_ID=your_account_id
+R2_ACCESS_KEY=your_access_key
+R2_SECRET_KEY=your_secret_key
+R2_BUCKET_NAME=epilanka-uploads
+R2_PUBLIC_BASE_URL=https://pub-your-id.r2.dev
 ```
 
 ### Installation
@@ -72,7 +88,10 @@ REDIS_URL=redis://localhost:6379/0
 2. **Setup Virtual Environment**:
    ```bash
    python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   # On Windows:
+   .\venv\Scripts\activate
+   # On Linux/macOS:
+   source venv/bin/activate
    ```
 
 3. **Install Dependencies**:
@@ -80,7 +99,7 @@ REDIS_URL=redis://localhost:6379/0
    pip install -r requirements.txt
    ```
 
-4. **Run Migrations** (for PostgreSQL):
+4. **Run Migrations**:
    ```bash
    alembic upgrade head
    ```
@@ -93,50 +112,35 @@ REDIS_URL=redis://localhost:6379/0
 
 ### Using Docker
 
-You can run the entire stack (API + MongoDB) using Docker Compose:
-
 ```bash
 docker-compose up --build
 ```
 
+## Project Structure
+
+- `alembic/`: Database migration scripts and configuration.
+- `config/`: Database connection managers (MongoDB, PostgreSQL).
+- `controllers/`: Business logic and database operations.
+- `models/`: SQLAlchemy (Postgres) and Pydantic models.
+- `routes/`: FastAPI route definitions.
+- `schemas/`: Pydantic schemas for data validation.
+- `utils/`: Utilities for Auth (Appwrite), Storage (R2), Redis, and WebSockets.
+- `main.py`: Entry point wrapping FastAPI with Socket.IO.
+
+## Helper Scripts
+
+- `seed_admin_user.py`: Populate initial admin user data.
+- `seed_officer_user.py`: Populate initial officer user data.
+- `setup_notifications.py`: Initialize notification templates/settings.
+- `test_notifications.py`: Script to test WebSocket notifications.
+
 ## API Documentation
 
-Once the server is running, you can access the interactive API documentation:
 - **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
 - **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
-### Authentication Note
-All API requests (except for docs) require an `x-api-key` header for authentication.
+*Note: All requests require the `x-api-key` header matching your `API_SECRET_KEY`.*
 
-### Caching Note
-- `GET /reports/historical-chart` and `GET /reports/metadata` use Redis read-through caching.
-- Cache TTL is 7 days.
-- If Redis is unavailable, API falls back to direct DB reads.
+## License
 
-## API Endpoints Summary
-
-| Tag | Method | Endpoint | Description |
-| --- | --- | --- | --- |
-| **Users** | POST | `/users/register` | Register a new user |
-| | POST | `/users/login` | User login (returns JWT) |
-| | POST | `/users/edit` | Edit user profile |
-| **Diseases** | GET | `/diseases/list` | List all diseases |
-| | POST | `/diseases/add` | Add a new disease |
-| | POST | `/diseases/update/{id}`| Update disease details |
-| | DELETE | `/diseases/delete/{id}`| Remove a disease |
-| **Map** | GET | `/map/nearestlocation` | Get nearest location by coordinates |
-| **Reports** | POST | `/user_reports/submit` | Submit a disease report |
-
-## Project Structure
-
-```text
-├── alembic/            # Database migrations
-├── config/             # DB configurations (Mongo & Postgres)
-├── controllers/        # Business logic
-├── models/             # Pydantic and SQLAlchemy models
-├── routes/             # API route definitions
-├── utils/              # Utility functions (JWT, etc.)
-├── main.py             # Application entry point
-├── requirements.txt    # Dependencies
-└── docker-compose.yml  # Docker orchestration
-```
+[TODO: Add License Information]
