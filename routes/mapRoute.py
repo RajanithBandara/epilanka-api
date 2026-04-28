@@ -2,9 +2,19 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException
 
-from controllers.mapController import fetch_nearest_area_from_postgres_only, fetch_all_districts_map_data
+from controllers.mapController import fetch_nearest_area_from_postgres_only, fetch_all_districts_map_data, get_all_locations
 
 router = APIRouter(prefix="/map", tags=["map"])
+
+@router.get("/locations", status_code=200)
+async def get_locations():
+    """Get all available districts/locations for filtering"""
+    try:
+        result = await get_all_locations()
+        return {"locations": result}
+    except Exception as e:
+        print(f"Error in locations: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/nearestlocation", status_code=200)
 async def get_nearest_location(latitude: float, longitude: float):

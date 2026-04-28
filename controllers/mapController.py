@@ -407,3 +407,25 @@ async def fetch_all_districts_map_data(target_date: date | None = None):
         "low_risk_count": sum(1 for d in districts if d["overall_risk"] == "low"),
         "safe_count": sum(1 for d in districts if d["overall_risk"] == "safe"),
     }
+
+
+async def get_all_locations():
+    """Get all districts/locations sorted by name for dropdown"""
+    async with AsyncSessionLocal() as session:
+        query = select(
+            District.district_id,
+            District.district_name,
+            District.province_name
+        ).order_by(District.district_name)
+        
+        result = await session.execute(query)
+        districts = result.all()
+        
+        return [
+            {
+                "district_id": row[0],
+                "district_name": row[1],
+                "province_name": row[2]
+            }
+            for row in districts
+        ]
