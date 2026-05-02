@@ -26,6 +26,7 @@ from routes.reportRoute import router as report_router
 from routes.adminRoutes import router as admin_report_router
 from routes.officerRoute import router as officer_router
 from routes.notificationRoute import router as notification_router
+from routes.chatRoute import router as chat_router
 from utils.websocket_manager import sio
 
 API_KEY = os.getenv("API_SECRET_KEY")
@@ -109,6 +110,7 @@ fastapi_app.include_router(report_router)
 fastapi_app.include_router(admin_report_router)
 fastapi_app.include_router(officer_router)
 fastapi_app.include_router(notification_router)
+fastapi_app.include_router(chat_router)
 
 app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
 
