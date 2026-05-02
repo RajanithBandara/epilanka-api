@@ -90,7 +90,7 @@ async def api_key_protect(request: Request, call_next):
     if not client_key:
         return JSONResponse(
             status_code=401,
-            content={"detail": "API key is required. Please provide 'x-api-key' header."}
+            content={"detail": "API key is required."}
         )
 
     if client_key != API_KEY:
