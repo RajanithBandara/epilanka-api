@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
 
 from fastapi.responses import JSONResponse
 
-fastapi_app = FastAPI(title="Epilanka API", lifespan=lifespan)
+fastapi_app = FastAPI(title="Epilanka API", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 # CORS Middleware — allow the frontend origins
 _frontend = os.getenv("FRONTEND_URL", "http://localhost:3000")
