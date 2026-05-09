@@ -278,3 +278,32 @@ def officer_change_password(
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/user-reports/{report_id}", status_code=200)
+async def officer_delete_report_route(
+    report_id: str,
+    district: str,
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    try:
+        from controllers.officerController import officer_delete_user_report
+        result = await officer_delete_user_report(report_id, district)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/users/{user_id}/ban", status_code=200)
+def officer_ban_user_route(
+    user_id: str,
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    try:
+        from controllers.officerController import ban_user
+        result = ban_user(user_id)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
