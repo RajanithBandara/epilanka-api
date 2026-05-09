@@ -368,3 +368,64 @@ async def has_user_voted(report_id: str, user_id: str, district_name: str):
         "score": report.get("score", 0),
         "district": district_name,
     }
+
+async def update_user_report(report_id: str, user_id: str, district_name: str, new_description: str):
+    await run_content_filter_pipeline(new_description)
+
+    db = get_async_database()
+    try:
+        report_object_id = ObjectId(report_id)
+    except Exception:
+        raise ValueError("Invalid report_id format")
+
+    identity = await _resolve_user_vote_keys(db, user_id)
+    mongo_id = identity["mongo_id"]
+
+    district_collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
+    district_collection = db[district_collection_name]
+
+    report = await district_collection.find_one({"_id": report_object_id})
+    if not report:
+        raise ValueError("Report not found")
+
+    if report.get("user_id") != mongo_id and report.get("user_id") != str(identity["user_doc"]["_id"]):
+        raise ValueError("Permission denied. You are not the owner of this report.")
+
+    await district_collection.update_one(
+        {"_id": report_object_id},
+        {
+            "$set": {
+                "description": new_description,
+                "updated_at": datetime.now(timezone.utc)
+            }
+        }
+    )
+    return {"success": True, "message": "Report updated successfully"}
+
+async def delete_user_report(report_id: str, user_id: str, district_name: str):
+    db = get_async_database()
+    try:
+        report_object_id = ObjectId(report_id)
+    except Exception:
+        raise ValueError("Invalid report_id format")
+
+    identity = await _resolve_user_vote_keys(db, user_id)
+    mongo_id = identity["mongo_id"]
+
+    district_collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
+    district_collection = db[district_collection_name]
+
+    report = await district_collection.find_one({"_id": report_object_id})
+    if not report:
+        raise ValueError("Report not found")
+
+    if report.get("user_id") != mongo_id and report.get("user_id") != str(identity["user_doc"]["_id"]):
+        raise ValueError("Permission denied. You are not the owner of this report.")
+
+    await district_collection.delete_one({"_id": report_object_id})
+    
+    user_reports_collection = db["user_reports"]
+    await user_reports_collection.delete_one({"report_id": report_object_id})
+
+    return {"success": True, "message": "Report deleted successfully"}
+

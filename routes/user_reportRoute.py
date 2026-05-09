@@ -103,3 +103,39 @@ async def getVotedStatus(reportid: str, userid: str, location: str):
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+from pydantic import BaseModel
+
+class UserReport_Update(BaseModel):
+    description: str
+
+@router.put("/update", status_code=200)
+async def update_report(
+    reportid: str,
+    location: str,
+    payload: UserReport_Update,
+    user: AppwriteUser = Depends(get_current_user)
+):
+    try:
+        from controllers.user_reportController import update_user_report
+        result = await update_user_report(reportid, user.get("$id"), location, payload.description)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/delete", status_code=200)
+async def delete_report(
+    reportid: str,
+    location: str,
+    user: AppwriteUser = Depends(get_current_user)
+):
+    try:
+        from controllers.user_reportController import delete_user_report
+        result = await delete_user_report(reportid, user.get("$id"), location)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
