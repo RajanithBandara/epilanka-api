@@ -4,7 +4,6 @@ Handles all notification database operations for MongoDB
 """
 
 from datetime import datetime, timezone
-from bson import ObjectId
 from config.db import get_database
 from models.notificationModel import NotificationCreate, NotificationUpdate
 import uuid

@@ -89,7 +89,7 @@ def update_profile(
     profile_data: ProfileUpdate = Body(...),
     user: AppwriteUser = Depends(get_current_user),
 ):
-    update_dict = profile_data.dict(exclude_unset=True)
+    update_dict = profile_data.model_dump(exclude_unset=True)
     result = update_user_profile_mongo(user["$id"], update_dict)
     if result.get("error"):
         raise HTTPException(status_code=409, detail=result["msg"])

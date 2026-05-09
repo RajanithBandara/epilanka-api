@@ -6,6 +6,9 @@ from config.db import get_database, get_async_database
 from config.postgredb import AsyncSessionLocal
 from models.user_reportModel import UserReport_Request
 from models.districtModel import District
+from utils.content_filter import run_content_filter_pipeline
+
+
 
 
 async def _resolve_user_vote_keys(db, user_id: str):
@@ -105,6 +108,9 @@ async def process_user_report(payload: UserReport_Request):
     Process and save user disease report to MongoDB.
     Stores in epilanka->districtwisecases->{district_name} structure.
     """
+    # 4-layer content filter: links → keywords → toxicity → health relevance
+    await run_content_filter_pipeline(payload.description)
+
     db = get_database()
     users_collection = db["users"]
 

@@ -25,3 +25,9 @@ boto3
 botocore
 appwrite
 redis
+better-profanity
+detoxify
+# ── Testing ──────────────────────────────────────────────────────────────────
+pytest
+pytest-asyncio
+pytest-mock

@@ -196,3 +196,33 @@ def delete_chat(user_id: str, chat_id: str) -> bool:
         row_id=_get_row_id(result.rows[0]),
     )
     return True
+
+
+# ── Rename ─────────────────────────────────────────────────────────────────────
+
+def rename_chat(user_id: str, chat_id: str, new_title: str) -> dict | None:
+    db = _db()
+
+    result = db.list_rows(
+        database_id=CHAT_DB_ID,
+        table_id=CHAT_TABLE_ID,
+        queries=[
+            Query.equal("userId", user_id),
+            Query.equal("chatId", chat_id),
+            Query.limit(1),
+        ],
+    )
+    if not result.rows:
+        return None
+
+    row = result.rows[0]
+    row_id = _get_row_id(row)
+    now = _now()
+
+    db.update_row(
+        database_id=CHAT_DB_ID,
+        table_id=CHAT_TABLE_ID,
+        row_id=row_id,
+        data={"title": new_title.strip(), "updatedAt": now},
+    )
+    return {"chatId": chat_id, "title": new_title.strip(), "updatedAt": now}

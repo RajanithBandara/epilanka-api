@@ -5,7 +5,6 @@ The Appwrite user.$id is used as the primary key in MongoDB profile documents.
 """
 
 from datetime import datetime, timezone
-from bson import ObjectId
 from config.db import get_database
 
 
