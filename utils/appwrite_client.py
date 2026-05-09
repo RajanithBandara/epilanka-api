@@ -2,7 +2,6 @@ import os
 from appwrite.client import Client
 from appwrite.services.account import Account
 from appwrite.services.users import Users
-from appwrite.services.tables_db import TablesDB
 
 APPWRITE_ENDPOINT = os.getenv("APPWRITE_ENDPOINT", "https://sgp.cloud.appwrite.io/v1")
 APPWRITE_PROJECT_ID = os.getenv("APPWRITE_PROJECT_ID", "")

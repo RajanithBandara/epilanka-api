@@ -15,12 +15,6 @@ class ExtractedData(BaseModel):
     confidence: str = "low"
 
 
-class UserReport_Request(BaseModel):
-    user_id: str  # Changed to str to accept MongoDB ObjectId
-    description: str
-    latitude: float
-    longitude: float
-    extracted_data: Optional[ExtractedData] = None
 
 class Districtwise_Report(BaseModel):
     report_id: int

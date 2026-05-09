@@ -90,6 +90,8 @@ _EXTRA_SPAM_WORDS: list[str] = [
     # Public humiliation
     "public shame", "expose you", "expose him", "expose her",
     "name and shame", "humiliate",
+    # Common profanity terms used by tests and production reports
+    "shit", "fucking", "fuck", "fucked", "bitch", "asshole",
 ]
 
 try:

@@ -1,12 +1,9 @@
 import os
 from contextlib import asynccontextmanager
 
-from dotenv import load_dotenv
 import socketio
 
-load_dotenv()
-
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
 
 from config.db import (
@@ -29,6 +26,10 @@ from routes.notificationRoute import router as notification_router
 from routes.chatRoute import router as chat_router
 from utils.websocket_manager import sio
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 API_KEY = os.getenv("API_SECRET_KEY")
 
 @asynccontextmanager
@@ -49,7 +50,6 @@ async def lifespan(app: FastAPI):
     await close_redis_connection()  # Close Redis client
     print("✅ All connections closed")
 
-from fastapi.responses import JSONResponse
 
 fastapi_app = FastAPI(title="Epilanka API", lifespan=lifespan)
 

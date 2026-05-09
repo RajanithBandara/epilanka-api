@@ -7,12 +7,6 @@ from alembic import context
 
 from config.postgredb import Base
 
-from models.riskModel import RiskLevel
-from models.diseaseModel import Disease
-from models.reportsModel import Report
-from models.districtModel import District
-from models.historydataModel import HistoryData
-from models.perdistrictPopulationModel import PerDistrictPopulation
 
 from dotenv import load_dotenv
 import os

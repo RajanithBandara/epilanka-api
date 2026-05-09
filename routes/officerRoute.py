@@ -249,7 +249,6 @@ def officer_update_name(
 ):
     """Update officer name."""
     try:
-        from utils.appwrite_client import get_account_service
         
         # Get the JWT from current user object (passed through dependency)
         # We need to call Appwrite account API to update the name
@@ -271,7 +270,6 @@ def officer_change_password(
 ):
     """Change officer password."""
     try:
-        from utils.appwrite_client import get_account_service
         
         # Password change would be called from frontend with current JWT
         return {
