@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +42,21 @@ FAKE_USER = {
     "labels": [],
     "emailVerification": True,
 }
+
+
+class _SimpleMocker:
+    def __init__(self):
+        self._patchers = []
+
+    def patch(self, target, *args, **kwargs):
+        patcher = patch(target, *args, **kwargs)
+        mocked = patcher.start()
+        self._patchers.append(patcher)
+        return mocked
+
+    def stopall(self):
+        while self._patchers:
+            self._patchers.pop().stop()
 
 FAKE_ADMIN = {
     "$id": "admin_user",
@@ -329,6 +345,15 @@ class FakeR2Client:
 @pytest.fixture(scope="session")
 def app():
     return main_module.fastapi_app
+
+
+@pytest.fixture
+def mocker():
+    helper = _SimpleMocker()
+    try:
+        yield helper
+    finally:
+        helper.stopall()
 
 
 @pytest.fixture

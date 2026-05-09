@@ -11,6 +11,9 @@ load_dotenv()
 # Get MongoDB URI from environment
 MONGODB_URI = os.getenv("MONGODB_URI")
 
+if os.getenv("TESTING") == "1" or os.getenv("PYTEST_CURRENT_TEST"):
+    MONGODB_URI = MONGODB_URI or "mongodb://127.0.0.1:27017/epilanka_test"
+
 # MongoDB client and database
 client = None
 db = None
@@ -79,6 +82,7 @@ def close_mongodb_connection() -> None:
     """Close MongoDB connection properly"""
     global client, db
     if client is not None:
+        assert client is not None
         try:
             client.close()
             print("✅ MongoDB sync connection closed")
@@ -92,6 +96,7 @@ async def close_mongodb_async_connection() -> None:
     """Close async MongoDB connection properly"""
     global async_client, async_db
     if async_client is not None:
+        assert async_client is not None
         try:
             async_client.close()
             print("✅ MongoDB async connection closed")
