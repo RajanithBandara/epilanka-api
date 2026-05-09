@@ -14,6 +14,15 @@ DB_NAME = os.getenv("POSTGRE_DBNAME")
 DB_USER = os.getenv("POSTGRE_USER")
 DB_PASSWORD = os.getenv("POSTGRE_PASSWORD")
 
+_TEST_MODE = os.getenv("TESTING") == "1" or bool(os.getenv("PYTEST_CURRENT_TEST"))
+
+if _TEST_MODE:
+    DB_HOST = DB_HOST or "127.0.0.1"
+    DB_PORT = DB_PORT or "5432"
+    DB_NAME = DB_NAME or "epilanka_test"
+    DB_USER = DB_USER or "test_user"
+    DB_PASSWORD = DB_PASSWORD or "test_password"
+
 
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
@@ -24,7 +33,7 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
-if not all([DB_NAME, DB_USER, DB_PASSWORD]):
+if not _TEST_MODE and not all([DB_NAME, DB_USER, DB_PASSWORD]):
     raise RuntimeError("DB_NAME, DB_USER and DB_PASSWORD environment variables must be set")
 
 # ── Async engine (used by existing async controllers) ──────────────────────
