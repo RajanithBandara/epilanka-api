@@ -1,6 +1,6 @@
 # Epilanka API
 
-Epilanka API is a robust backend service built with FastAPI, designed to manage disease-related reports, user profiles, and geographical mapping for the Epilanka platform. It utilizes a multi-database architecture and integrates with various modern services for authentication, storage, and real-time communication.
+Epilanka API is a robust backend service built with FastAPI, designed to manage disease-related reports, user profiles, and geographical mapping for the Epilanka platform. It utilizes a multi-database architecture and integrates with various modern services for authentication, storage, real-time communication, and AI-driven features.
 
 ## Features
 
@@ -8,7 +8,8 @@ Epilanka API is a robust backend service built with FastAPI, designed to manage 
 - **Disease Data CRUD**: Manage disease information including names, descriptions, and thresholds.
 - **Reporting System**: Submit and process disease occurrences with image support (stored in R2).
 - **Geographical Mapping**: Coordinate-based location services and population density data.
-- **Real-time Notifications**: Live updates via Socket.IO for critical alerts.
+- **Real-time Notifications**: Live updates via Socket.IO for critical alerts and chat.
+- **AI Integration**: Content filtering and data extraction powered by Gemini and Groq.
 - **Security**: 
   - `x-api-key` protection for all endpoints.
   - JWT-based authorization (via Appwrite).
@@ -21,38 +22,39 @@ Epilanka API is a robust backend service built with FastAPI, designed to manage 
 
 - **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
 - **Real-time**: [python-socketio](https://python-socketio.readthedocs.io/) (Socket.IO)
+- **AI/ML**: [Google Gemini](https://ai.google.dev/), [Groq](https://groq.com/), [Detoxify](https://github.com/unitaryai/detoxify)
 - **Databases**: 
-  - [MongoDB](https://www.mongodb.com/) (Pymongo & Motor for async) — Profile & unstructured data.
   - [PostgreSQL](https://www.postgresql.org/) (SQLAlchemy & asyncpg) — Relational data & reporting.
+  - [MongoDB](https://www.mongodb.com/) (Motor for async) — Profile & unstructured data.
   - [Redis](https://redis.io/) — Read-through caching.
 - **Authentication**: [Appwrite](https://appwrite.io/)
 - **Storage**: [Cloudflare R2](https://www.cloudflare.com/products/r2/) (S3-compatible) — Image uploads.
 - **Migrations**: [Alembic](https://alembic.sqlalchemy.org/)
+- **Testing**: [Pytest](https://docs.pytest.org/)
 - **Containerization**: Docker & Docker Compose
 
 ## Getting Started
 
 ### Prerequisites
 
-- Python 3.9+
-- MongoDB instance (local or Atlas)
+- Python 3.12+
 - PostgreSQL instance
-- Redis instance (optional, for caching)
+- MongoDB instance (local or Atlas)
+- Redis instance
 - Appwrite Project (for authentication)
 - Cloudflare R2 Bucket (for image storage)
+- Gemini & Groq API Keys (for AI features)
 - Docker & Docker Compose (optional)
 
 ### Environment Variables
 
-Create a `.env` file in the root directory and configure the following:
+Create a `.env` file in the root directory based on the following template:
 
 ```env
 # General
 API_SECRET_KEY=your_shared_api_key
 FRONTEND_URL=http://localhost:3000
-
-# MongoDB
-MONGODB_URI=mongodb+srv://...
+JWT_SECRET=your_jwt_secret
 
 # PostgreSQL
 POSTGRE_HOST=localhost
@@ -61,20 +63,30 @@ POSTGRE_DBNAME=epilanka
 POSTGRE_USER=postgres
 POSTGRE_PASSWORD=your_password
 
-# Redis (Optional)
-REDIS_URL=redis://localhost:6379/0
+# MongoDB
+MONGODB_URI=mongodb+srv://...
+
+# Redis
+REDIS_PUBLIC_URL=redis://...
 
 # Appwrite
 APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
 APPWRITE_PROJECT_ID=your_project_id
 APPWRITE_API_KEY=your_server_api_key
+APPWRITE_PROJECT_NAME=epilanka
+APPWRITE_CHAT_DB_ID=...
+APPWRITE_CHAT_COLLECTION_ID=...
 
 # Cloudflare R2
 R2_ACCOUNT_ID=your_account_id
 R2_ACCESS_KEY=your_access_key
 R2_SECRET_KEY=your_secret_key
-R2_BUCKET_NAME=epilanka-uploads
-R2_PUBLIC_BASE_URL=https://pub-your-id.r2.dev
+R2_BUCKET_NAME=epilanka
+R2_PUBLIC_BASE_URL=https://...
+
+# AI APIs
+GEMINI_API_KEY=your_gemini_key
+GROQ_API_KEY=your_groq_key
 ```
 
 ### Installation
@@ -124,15 +136,22 @@ docker-compose up --build
 - `models/`: SQLAlchemy (Postgres) and Pydantic models.
 - `routes/`: FastAPI route definitions.
 - `schemas/`: Pydantic schemas for data validation.
-- `utils/`: Utilities for Auth (Appwrite), Storage (R2), Redis, and WebSockets.
+- `scripts/`: Helper scripts including the test runner.
+- `tests/`: Pytest test suite.
+- `utils/`: Utilities for Auth, Storage, Redis, WebSockets, and AI filters.
 - `main.py`: Entry point wrapping FastAPI with Socket.IO.
 
-## Helper Scripts
+## Scripts & Commands
 
-- `seed_admin_user.py`: Populate initial admin user data.
-- `seed_officer_user.py`: Populate initial officer user data.
-- `setup_notifications.py`: Initialize notification templates/settings.
-- `test_notifications.py`: Script to test WebSocket notifications.
+- **Seeding**:
+  - `python seed_admin_user.py`: Populate initial admin user data.
+  - `python seed_officer_user.py`: Populate initial officer user data.
+- **Setup**:
+  - `python setup_notifications.py`: Initialize notification templates/settings.
+- **Testing**:
+  - `test.bat [quick|full|report|coverage|watch]`: Windows test runner.
+  - `python scripts/run_tests.py [--full] [--html] [--coverage]`: Platform-independent test runner.
+  - `pytest`: Run tests directly using the configuration in `pytest.ini`.
 
 ## API Documentation
 
