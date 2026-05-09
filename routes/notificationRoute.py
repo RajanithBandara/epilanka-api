@@ -163,6 +163,27 @@ async def mark_read(
         )
 
 
+@router.put("/read-all", status_code=status.HTTP_200_OK)
+async def mark_all_read(
+    user: AppwriteUser = Depends(get_current_user)
+):
+    """
+    Mark all notifications as read for the current user
+    """
+    try:
+        count = mark_all_notifications_as_read(user["$id"])
+
+        return {
+            "message": "All notifications marked as read",
+            "count": count
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to mark notifications as read: {str(e)}"
+        )
+
+
 @router.put("/{notification_id}", status_code=status.HTTP_200_OK)
 async def update_single_notification(
     notification_id: str,
@@ -196,27 +217,6 @@ async def update_single_notification(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update notification: {str(e)}"
-        )
-
-
-@router.put("/read-all", status_code=status.HTTP_200_OK)
-async def mark_all_read(
-    user: AppwriteUser = Depends(get_current_user)
-):
-    """
-    Mark all notifications as read for the current user
-    """
-    try:
-        count = mark_all_notifications_as_read(user["$id"])
-        
-        return {
-            "message": "All notifications marked as read",
-            "count": count
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to mark notifications as read: {str(e)}"
         )
 
 

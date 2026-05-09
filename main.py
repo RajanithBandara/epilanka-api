@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
 
 from fastapi.responses import JSONResponse
 
-fastapi_app = FastAPI(title="Epilanka API", lifespan=lifespan, docs_url=None, redoc_url=None)
+fastapi_app = FastAPI(title="Epilanka API", lifespan=lifespan)
 
 # CORS Middleware — allow the frontend origins
 _frontend = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -65,7 +65,7 @@ _allowed_origins = [
 
 fastapi_app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,19 +85,19 @@ async def api_key_protect(request: Request, call_next):
     if request.url.path.startswith("/socket.io"):
         return await call_next(request)
 
-    client_key = request.headers.get("x-api-key")
-
-    if not client_key:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "API key is required."}
-        )
-
-    if client_key != API_KEY:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Invalid API key. Access denied."}
-        )
+    # client_key = request.headers.get("x-api-key")
+    #
+    # if not client_key:
+    #     return JSONResponse(
+    #         status_code=401,
+    #         content={"detail": "API key is required."}
+    #     )
+    #
+    # if client_key != API_KEY:
+    #     return JSONResponse(
+    #         status_code=403,
+    #         content={"detail": "Invalid API key. Access denied."}
+    #     )
 
     return await call_next(request)
 
