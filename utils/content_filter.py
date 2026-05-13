@@ -1,15 +1,25 @@
 """
-4-Layer Content Filtering Pipeline for EpiLanka User Reports
+3-Layer Content Filtering Pipeline for EpiLanka User Reports
 ============================================================
 
-Layer 1 — Regex Link & Phrase Detection        (< 1ms, sync)
-Layer 2 — Spam/Profanity Keyword Detection     (< 5ms, sync)
-Layer 3 — Detoxify ML Toxicity Detection       (50-200ms, sync, server-only)
-Layer 4 — Groq Health Relevance Classifier     (500-1500ms, async, server-only)
+Layer 1 — Regex Link & Phrase Detection          (< 1ms,  sync)
+Layer 2 — Spam / Profanity Keyword Detection     (< 5ms,  sync)
+Layer 3 — Groq LLM: Health Validity + Toxicity  (500-1500ms, async)
 
-Each layer raises ValueError with a user-friendly message on failure.
-Layers 3-4 fail silently (log + skip) on model/API errors so the
-API never crashes due to filter unavailability.
+Architecture change (Option B):
+  Layers 3 (Detoxify toxic-bert) and 4 (Groq health relevance) have been
+  MERGED into a single Groq call.  The LLM now simultaneously checks:
+    • Is the text a genuine health report?      (was Layer 4)
+    • Does it contain toxicity / threats / hate? (was Layer 3 / Detoxify)
+  This gives llama-3.3-70b-quality judgement on BOTH dimensions in ONE
+  API round-trip (~500-1500 ms) with ZERO RAM overhead — far better than
+  running toxic-bert locally (which needed ~440 MB just for model weights).
+
+  Fast-path shortcut: if the text contains clear health keywords AND passes
+  the keyword toxicity pre-screen, we skip Groq entirely (< 8ms total).
+
+Layer 3 fails silently (log + skip) on API errors so a Groq outage never
+blocks a legitimate user report.
 """
 
 from __future__ import annotations
@@ -90,7 +100,7 @@ _EXTRA_SPAM_WORDS: list[str] = [
     # Public humiliation
     "public shame", "expose you", "expose him", "expose her",
     "name and shame", "humiliate",
-    # Common profanity terms used by tests and production reports
+    # Common profanity terms
     "shit", "fucking", "fuck", "fucked", "bitch", "asshole",
 ]
 
@@ -174,71 +184,22 @@ def check_keywords(text: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LAYER 3 — Detoxify ML Toxicity Detection
+# LAYER 3 — Groq LLM: Combined Health Validity + Toxicity Check
+#
+# A single llama-3.3-70b call replaces both:
+#   • the former Detoxify toxic-bert (Layer 3) — 440 MB RAM, not viable on 1 GB
+#   • the former Groq health-relevance call  (Layer 4) — was a separate request
+#
+# The model returns exactly one token: VALID | TOXIC | IRRELEVANT
+#
+# Fast-path shortcuts skip the Groq call when the answer is obviously safe:
+#   • Text contains a recognised health keyword  AND
+#   • Text does NOT contain an obvious toxicity signal
 # ══════════════════════════════════════════════════════════════════════════════
 
-_detoxify_model = None
-_detoxify_attempted = False
-
-
-def _get_detoxify():
-    """Lazy-load the Detoxify model once. Returns None if unavailable."""
-    global _detoxify_model, _detoxify_attempted
-    if _detoxify_attempted:
-        return _detoxify_model
-    _detoxify_attempted = True
-    try:
-        from detoxify import Detoxify
-        _detoxify_model = Detoxify("original")
-        logger.info("[ContentFilter] Detoxify model loaded.")
-    except Exception as e:
-        logger.warning(f"[ContentFilter] Detoxify not available: {e}")
-    return _detoxify_model
-
-
-# Thresholds — tuned conservatively to avoid false positives in health contexts
-_TOXICITY_THRESHOLDS: dict[str, float] = {
-    "toxicity":        0.70,
-    "severe_toxicity": 0.60,
-    "insult":          0.65,
-    "threat":          0.70,
-    "identity_attack": 0.65,
-    "obscene":         0.70,
-}
-
-
-def check_toxicity(text: str) -> None:
-    """Layer 3 — ML-based toxicity detection via Detoxify (toxic-bert)."""
-    model = _get_detoxify()
-    if model is None:
-        return  # Skip gracefully if model unavailable
-
-    try:
-        scores: dict[str, float] = model.predict(text)
-        for label, threshold in _TOXICITY_THRESHOLDS.items():
-            score = float(scores.get(label, 0.0))
-            if score > threshold:
-                logger.info(
-                    f"[ContentFilter] Toxicity blocked — {label}={score:.2f} "
-                    f"(threshold={threshold})"
-                )
-                raise ValueError(
-                    "Your report contains harmful, threatening, or offensive content. "
-                    "Please keep your submission factual, respectful, and health-related."
-                )
-    except ValueError:
-        raise
-    except Exception as e:
-        # Model inference errors should never block a legitimate report
-        logger.warning(f"[ContentFilter] Detoxify inference error (skipping): {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LAYER 4 — Groq Health Relevance AI Classifier
-# ══════════════════════════════════════════════════════════════════════════════
-
-# If the text contains ANY of these keywords it is almost certainly
-# health-related — skip the expensive Groq call for speed.
+# Clear health-related keywords — if ANY of these appear the text is almost
+# certainly a genuine health report.  We still run the toxicity half of the
+# prompt unless a hard toxicity signal is also absent.
 _HEALTH_SHORTCUTS: frozenset[str] = frozenset({
     "fever", "cough", "dengue", "malaria", "cholera", "diarrhea", "diarrhoea",
     "vomiting", "nausea", "symptom", "symptoms", "disease", "infection",
@@ -253,53 +214,89 @@ _HEALTH_SHORTCUTS: frozenset[str] = frozenset({
     "poisoning", "allergy", "inflammation", "swelling", "disability",
 })
 
-_GROQ_CLASSIFIER_PROMPT = """\
-You are a health report validator for EpiLanka, Sri Lanka's disease surveillance platform.
+# Hard toxicity signals that mean the shortcut should NOT apply even if a
+# health keyword is present (e.g. "I will kill all fever patients").
+_HARD_TOXICITY_SIGNALS: list[str] = [
+    "i will kill", "i'll kill", "going to kill", "gonna kill",
+    "i will hurt", "i'll hurt", "i will attack", "you will die",
+    "i will rape", "kill yourself", "kys", "end your life",
+    "i'll find you", "i know where you live",
+    "fuck you", "go fuck yourself",
+    "nigger", "nigga", "faggot", "chink", "kike", "spic",
+]
+_HARD_TOXICITY_RE = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in _HARD_TOXICITY_SIGNALS) + r")\b",
+    re.IGNORECASE,
+)
 
-TASK: Determine if the text below is a genuine health or disease incident report.
+# The merged prompt — asks the model to decide health validity AND toxicity in
+# one shot and respond with exactly one word.
+_GROQ_COMBINED_PROMPT = """\
+You are a content moderator for EpiLanka, Sri Lanka's official disease surveillance platform.
 
-A VALID report MUST describe one or more of:
-- Real disease symptoms experienced by people
-- Number of affected people or patients
-- A specific disease, illness, or health condition
-- A health outbreak or community health concern
-- Treatment sought or medical response
+Analyse the REPORT TEXT below and respond with EXACTLY ONE of these three words — nothing else:
 
-INVALID reports include:
-- Spam, promotions, advertisements, or marketing content
-- Personal data requests or solicitations
-- Links, URLs, or calls to action
-- Social media opinions or general commentary
-- Random/gibberish text or test entries
-- Personal grievances unrelated to disease/health
-- Public humiliation or threats
+  VALID       — The text is a genuine health or disease incident report AND contains
+                no harmful, toxic, threatening, or hateful content.
+
+  TOXIC       — The text contains threats, hate speech, severe insults, identity attacks,
+                or sexual harassment — regardless of whether it mentions health topics.
+
+  IRRELEVANT  — The text is not a genuine health report (spam, ads, gibberish, personal
+                grievances, test entries, social media opinion, etc.) but is NOT toxic.
+
+Rules for VALID:
+  • Must describe real disease symptoms, affected people, a specific disease/illness,
+    a health outbreak, or treatment sought.
+  • Must be written in a factual, respectful tone.
+
+Rules for TOXIC (takes priority over VALID):
+  • Any direct threat ("I will kill/hurt/attack …")
+  • Hate speech or slurs targeting race, religion, ethnicity, gender, or sexuality
+  • Sexual harassment or explicit content
+  • Calls for self-harm
+
+Rules for IRRELEVANT:
+  • Spam, promotions, marketing, advertisements
+  • Random or gibberish text
+  • Personal grievances unrelated to disease or public health
+  • Social commentary with no health incident described
 
 REPORT TEXT:
 "{text}"
 
-Respond with ONLY one word: YES if valid health report, NO if not."""
+Your answer (one word only):"""
 
 _GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-async def check_health_relevance(text: str) -> None:
-    """Layer 4 — Groq LLM classifier to verify health relevance."""
+async def check_with_groq(text: str) -> None:
+    """
+    Layer 3 — Single Groq call that simultaneously checks health validity
+    and toxicity.  Returns one of: VALID | TOXIC | IRRELEVANT.
 
-    # Fast path: if the text clearly mentions health-related terms, skip Groq
+    Fast-path: skip Groq entirely when the text clearly contains a recognised
+    health keyword AND no hard toxicity signal is present.
+    """
     words_in_text = set(re.findall(r"\b\w+\b", text.lower()))
-    if words_in_text & _HEALTH_SHORTCUTS:
-        logger.debug("[ContentFilter] Health shortcut matched — skipping Groq.")
+    has_health_keyword = bool(words_in_text & _HEALTH_SHORTCUTS)
+    has_hard_toxicity  = bool(_HARD_TOXICITY_RE.search(text))
+
+    if has_health_keyword and not has_hard_toxicity:
+        logger.debug(
+            "[ContentFilter] Fast-path: health keyword present, no hard toxicity — skipping Groq."
+        )
         return
 
     groq_key = os.getenv("GROQ_API_KEY")
     if not groq_key:
-        logger.warning("[ContentFilter] GROQ_API_KEY not set — skipping Layer 4.")
+        logger.warning("[ContentFilter] GROQ_API_KEY not set — skipping Layer 3.")
         return
 
-    prompt = _GROQ_CLASSIFIER_PROMPT.format(text=text[:800])  # cap prompt length
+    prompt = _GROQ_COMBINED_PROMPT.format(text=text[:800])  # cap to keep costs low
 
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             resp = await client.post(
                 _GROQ_API_URL,
                 headers={
@@ -310,57 +307,65 @@ async def check_health_relevance(text: str) -> None:
                     "model": "llama-3.3-70b-versatile",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.0,
-                    "max_tokens": 5,
+                    "max_tokens": 5,   # VALID / TOXIC / IRRELEVANT + margin
                 },
             )
 
         if resp.status_code != 200:
             logger.warning(
-                f"[ContentFilter] Groq returned {resp.status_code} — skipping Layer 4."
+                f"[ContentFilter] Groq returned {resp.status_code} — skipping Layer 3."
             )
             return
 
-        data = resp.json()
+        data   = resp.json()
         answer: str = (
             data.get("choices", [{}])[0]
             .get("message", {})
-            .get("content", "YES")
+            .get("content", "VALID")
             .strip()
             .upper()
         )
 
-        logger.info(f"[ContentFilter] Groq health classifier → {answer}")
+        logger.info(f"[ContentFilter] Groq combined classifier → {answer}")
 
-        if answer.startswith("NO"):
+        if answer.startswith("TOXIC"):
+            raise ValueError(
+                "Your report contains harmful, threatening, or offensive content. "
+                "Please keep your submission factual, respectful, and health-related."
+            )
+
+        if answer.startswith("IRRELEVANT"):
             raise ValueError(
                 "Your report doesn't appear to describe a real health or disease incident. "
                 "EpiLanka only accepts genuine health reports such as disease outbreaks, "
                 "symptoms, or patient cases. Please describe the actual health situation."
             )
 
+        # VALID — allow through
+        logger.debug("[ContentFilter] Groq: report accepted as VALID.")
+
     except ValueError:
         raise
     except Exception as e:
-        # Never block a report just because the AI check failed
-        logger.warning(f"[ContentFilter] Groq health check error (skipping): {e}")
+        # A Groq outage / network error must never block a legitimate report.
+        logger.warning(f"[ContentFilter] Groq combined check error (skipping): {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN PIPELINE — run all 4 layers in order
+# MAIN PIPELINE — run all 3 layers in order
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_content_filter_pipeline(description: str) -> None:
     """
-    Run the full 4-layer content filter pipeline.
+    Run the full 3-layer content filter pipeline.
 
     Raises ValueError with a user-facing message on the FIRST failed layer.
-    Layers 3-4 are skipped silently on model/API errors.
+    Layer 3 is skipped silently on Groq API errors.
 
     Order (fastest → slowest):
-        Layer 1 → Regex link/phrase detection
-        Layer 2 → Spam & profanity keyword detection
-        Layer 3 → Detoxify ML toxicity scoring
-        Layer 4 → Groq health relevance classification
+        Layer 1 → Regex link/phrase detection          (< 1ms)
+        Layer 2 → Spam & profanity keyword detection   (< 5ms)
+        Layer 3 → Groq LLM: health validity + toxicity (500-1500ms or skipped)
     """
     text = description.strip()
 
@@ -370,8 +375,5 @@ async def run_content_filter_pipeline(description: str) -> None:
     # Layer 2 — keyword/profanity + structural spam
     check_keywords(text)
 
-    # Layer 3 — ML toxicity (sync, 50-200ms)
-    check_toxicity(text)
-
-    # Layer 4 — AI health relevance (async, 500-1500ms or skipped)
-    await check_health_relevance(text)
+    # Layer 3 — Groq: combined health-validity + toxicity (async)
+    await check_with_groq(text)

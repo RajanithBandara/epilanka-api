@@ -108,15 +108,16 @@ async def process_user_report(payload: UserReport_Request):
     Process and save user disease report to MongoDB.
     Stores in epilanka->districtwisecases->{district_name} structure.
     """
-    # 4-layer content filter: links → keywords → toxicity → health relevance
+    # 3-layer content filter: links → keywords → Groq (health validity + toxicity combined)
     await run_content_filter_pipeline(payload.description)
 
-    db = get_database()
+    # Use async Motor client to avoid blocking the event loop on a 1-CPU server.
+    db = get_async_database()
     users_collection = db["users"]
 
     # The authenticated user ID comes from Appwrite JWT (appwrite_id), not Mongo _id.
     # Resolve by appwrite_id first, then optionally support legacy Mongo ObjectId input.
-    user = users_collection.find_one({"appwrite_id": payload.user_id})
+    user = await users_collection.find_one({"appwrite_id": payload.user_id})
 
     user_object_id = None
     if user:
@@ -124,7 +125,7 @@ async def process_user_report(payload: UserReport_Request):
     else:
         try:
             user_object_id = ObjectId(payload.user_id) if isinstance(payload.user_id, str) else payload.user_id
-            user = users_collection.find_one({"_id": user_object_id})
+            user = await users_collection.find_one({"_id": user_object_id})
         except Exception:
             user = None
 
@@ -178,12 +179,12 @@ async def process_user_report(payload: UserReport_Request):
         "updated_at": current_time
     }
 
-    # Insert into district-specific collection
-    result = district_collection.insert_one(case_doc)
+    # Insert into district-specific collection (async Motor)
+    result = await district_collection.insert_one(case_doc)
 
     # Also maintain a reference in main user_reports collection for tracking
     user_reports_collection = db["user_reports"]
-    user_reports_collection.insert_one({
+    await user_reports_collection.insert_one({
         "report_id": result.inserted_id,
         "user_id": str(user_object_id),
         "district_collection": district_collection_name,
