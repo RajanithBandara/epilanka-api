@@ -396,8 +396,9 @@ class TestLayer3Groq:
         monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: self._fake_groq("TOXIC")())
         monkeypatch.setenv("GROQ_API_KEY", "fake-key")
         with pytest.raises(ValueError, match="harmful"):
+            # No health keyword → Groq is called; no hard-toxicity signal → not short-circuited
             await check_with_groq(
-                "The dengue outbreak is targeting a specific community because of who they are."
+                "People of that community should be removed from this area entirely."
             )
 
     # ── Hard toxicity signals bypass the health-keyword fast-path ────────────
@@ -589,8 +590,9 @@ class TestFullPipeline:
     async def test_pipeline_blocks_toxic_content(self, monkeypatch):
         self._patch_groq(monkeypatch, groq_answer="TOXIC")
         with pytest.raises(ValueError, match="harmful"):
+            # No health keyword in this text → Groq is reached and returns TOXIC
             await run_content_filter_pipeline(
-                "I want to harm the people in that hospital for not treating patients."
+                "I want to cause harm to those people for not doing their jobs properly."
             )
 
     # ── Should BLOCK (Layer 3 — Groq IRRELEVANT) ─────────────────────────────
