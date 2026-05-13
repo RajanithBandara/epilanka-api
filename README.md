@@ -33,9 +33,7 @@ Epilanka API is a robust backend service built with FastAPI, designed to manage 
 - **Testing**: [Pytest](https://docs.pytest.org/)
 - **Containerization**: Docker & Docker Compose
 
-## Getting Started
-
-### Prerequisites
+## Requirements
 
 - Python 3.12+
 - PostgreSQL instance
@@ -46,9 +44,51 @@ Epilanka API is a robust backend service built with FastAPI, designed to manage 
 - Gemini & Groq API Keys (for AI features)
 - Docker & Docker Compose (optional)
 
-### Environment Variables
+## Setup & Installation
 
-Create a `.env` file in the root directory based on the following template:
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd epilanka-api
+   ```
+
+2. **Setup Virtual Environment**:
+   ```bash
+   python -m venv venv
+   # On Windows:
+   .\venv\Scripts\activate
+   # On Linux/macOS:
+   source venv/bin/activate
+   ```
+
+3. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Environment Variables**:
+   Create a `.env` file in the root directory based on the template below (see [Environment Variables](#environment-variables)).
+
+5. **Run Migrations**:
+   ```bash
+   alembic upgrade head
+   ```
+
+6. **Run the Application**:
+   ```bash
+   uvicorn main:app --reload
+   ```
+   The API will be available at `http://localhost:8000`.
+
+### Using Docker
+
+```bash
+docker-compose up --build
+```
+
+## Environment Variables
+
+Create a `.env` file in the root directory:
 
 ```env
 # General
@@ -89,76 +129,58 @@ GEMINI_API_KEY=your_gemini_key
 GROQ_API_KEY=your_groq_key
 ```
 
-### Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd epilanka-api
-   ```
-
-2. **Setup Virtual Environment**:
-   ```bash
-   python -m venv venv
-   # On Windows:
-   .\venv\Scripts\activate
-   # On Linux/macOS:
-   source venv/bin/activate
-   ```
-
-3. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run Migrations**:
-   ```bash
-   alembic upgrade head
-   ```
-
-5. **Run the Application**:
-   ```bash
-   uvicorn main:app --reload
-   ```
-   The API will be available at `http://localhost:8000`.
-
-### Using Docker
-
-```bash
-docker-compose up --build
-```
-
 ## Project Structure
 
-- `alembic/`: Database migration scripts and configuration.
-- `config/`: Database connection managers (MongoDB, PostgreSQL).
-- `controllers/`: Business logic and database operations.
-- `models/`: SQLAlchemy (Postgres) and Pydantic models.
-- `routes/`: FastAPI route definitions.
-- `schemas/`: Pydantic schemas for data validation.
-- `scripts/`: Helper scripts including the test runner.
-- `tests/`: Pytest test suite.
-- `utils/`: Utilities for Auth, Storage, Redis, WebSockets, and AI filters.
-- `main.py`: Entry point wrapping FastAPI with Socket.IO.
+```text
+.
+├── alembic/                # Database migration scripts and configuration
+├── config/                 # Database connection managers (MongoDB, PostgreSQL)
+├── controllers/            # Business logic and database operations
+├── models/                 # SQLAlchemy (Postgres) and Pydantic models
+├── routes/                 # FastAPI route definitions
+├── schemas/                # Pydantic schemas for data validation
+├── scripts/                # Helper scripts (e.g., test runner)
+├── tests/                  # Pytest test suite
+├── utils/                  # Utilities (Auth, Storage, Redis, WebSockets, AI)
+├── Dockerfile              # Docker image definition
+├── docker-compose.yml      # Multi-container orchestration
+├── main.py                 # Application entry point (FastAPI + Socket.IO)
+└── requirements.txt        # Python dependencies
+```
 
-## Scripts & Commands
+## Scripts
 
-- **Seeding**:
+- **Seeding Data**:
   - `python seed_admin_user.py`: Populate initial admin user data.
   - `python seed_officer_user.py`: Populate initial officer user data.
-- **Setup**:
+- **Configuration**:
   - `python setup_notifications.py`: Initialize notification templates/settings.
-- **Testing**:
-  - `test.bat [quick|full|report|coverage|watch]`: Windows test runner.
+- **Testing Runners**:
+  - `test.bat [quick|full|report|coverage|watch]`: Windows-specific test runner.
   - `python scripts/run_tests.py [--full] [--html] [--coverage]`: Platform-independent test runner.
-  - `pytest`: Run tests directly using the configuration in `pytest.ini`.
+
+## Testing
+
+The project uses `pytest` for testing. You can run tests using the provided scripts or directly:
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage (if configured)
+pytest --cov=.
+```
+
+Test configuration is managed in `pytest.ini`.
 
 ## API Documentation
+
+Once the server is running, you can access the interactive documentation:
 
 - **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
 - **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
-*Note: All requests require the `x-api-key` header matching your `API_SECRET_KEY`.*
+*Note: Most requests require the `x-api-key` header matching your `API_SECRET_KEY`.*
 
 ## License
 

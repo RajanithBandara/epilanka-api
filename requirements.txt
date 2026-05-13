@@ -26,7 +26,8 @@ botocore
 appwrite
 redis
 better-profanity
-detoxify
+# detoxify removed: pulls PyTorch (~1.5 GB), incompatible with 1 GB server.
+# Layer 3 now uses a zero-memory keyword regex (see utils/content_filter.py).
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest
 pytest-asyncio

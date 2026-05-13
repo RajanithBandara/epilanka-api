@@ -1,10 +1,19 @@
 """
 tests/test_content_filter.py
 ============================
-Comprehensive unit tests for the 4-layer content filtering pipeline.
+Comprehensive unit tests for the 3-layer content filtering pipeline.
 
-Tests are organised by layer and use pytest-asyncio for async layers.
-Detoxify and Groq are monkeypatched so tests run offline and instantly.
+Tests are organised by layer and use pytest-asyncio for the async layer.
+Groq is monkeypatched so tests run fully offline and instantly.
+
+Architecture (post Option-B merge):
+  Layer 1 — check_links()        (sync, regex)
+  Layer 2 — check_keywords()     (sync, profanity/spam)
+  Layer 3 — check_with_groq()    (async, single Groq call: VALID | TOXIC | IRRELEVANT)
+
+The old Layer 3 (Detoxify / check_toxicity) and Layer 4 (check_health_relevance)
+have been merged into check_with_groq().  Tests that previously mocked the
+Detoxify model now assert the same behaviours through the Groq mock.
 
 Run with:
     pytest tests/test_content_filter.py -v
@@ -24,10 +33,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from utils.content_filter import (
-    check_health_relevance,
     check_keywords,
     check_links,
-    check_toxicity,
+    check_with_groq,
     run_content_filter_pipeline,
 )
 
@@ -178,61 +186,20 @@ class TestLayer2Keywords:
             check_keywords("A" * 2001)
 
     def test_passes_exactly_2000_chars(self):
-        # A long, realistic health narrative with high word variety.
-        # We use simple words to absolutely guarantee no accidental profanity matches.
-        text = ""
-        # Loop through the vocabulary adding words to build a 2000-char text.
-        # The unique ratio will be len(words) / total_words which for 2000 chars (~300 words)
-        # is 57 / 300 = ~19%. Wait, the check needs > 30% unique words.
-        # Let's use a larger vocabulary.
-        text = " ".join([f"word{i} disease{i} patient{i} fever{i} clinic{i}" for i in range(100)])
-        # That's 500 words, all unique. That's 100% unique ratio.
-        # Let's pad it out to exactly 2000 chars.
-        text = " ".join([f"patient_number_{i}_has_a_fever_and_needs_a_doctor" for i in range(100)])
-        # That's 100 words, 100% unique.
-        text = ""
-        for i in range(1, 300):
-            text += f"The patient {i} arrived at the clinic with a mild fever and cough today. "
-        
-        # To bypass word variety (needs > 0.3):
-        # The loop above has 15 words per sentence. Only 'i' changes.
-        # Ratio = (14 + 300) / (15 * 300) = 314 / 4500 = 7% (Fails)
-
-        # Let's just generate a text with high variety using numbers.
-        text = " ".join(f"Medical record entry {i} indicates fever." for i in range(250))
-        # Unique words: Medical, record, entry, indicates, fever., 1, 2, ..., 250 -> 255 unique words.
-        # Total words: 5 * 250 = 1250 words.
-        # Ratio: 255 / 1250 = 20.4%. Fails.
-
-        # We need a text where almost every word is unique.
-        text = " ".join(f"Patient_ID_{i}_has_symptom_{i}_at_location_{i}_on_day_{i}" for i in range(150))
-        text = text[:2000].strip()
-        # Ensure it's exactly 2000 chars
-        text = text.ljust(2000, "X")
-        # Wait, ljust with X might trigger "repeated text" if it's too many Xs, or structural spam.
-        text = text[:2000]
-        
-        # Let's just do a clean string of words that is >30% unique and exactly 2000 chars
-        unique_words = [f"health_check_token_{i}" for i in range(200)]
-        text = " ".join(unique_words)
-        text = text.ljust(2000, ".") # This might hit repeated symbols
-        
-        # Let's build exactly 2000 characters
+        # Build exactly 2000 chars of high word-variety text (> 30% unique)
         tokens = []
         for i in range(1000):
             tokens.append(f"health{i}")
             current_text = " ".join(tokens)
             if len(current_text) > 2000:
-                # Trim the last token to fit exactly 2000 chars
                 excess = len(current_text) - 2000
                 if excess > 0:
                     tokens[-1] = tokens[-1][:-excess]
                 text = " ".join(tokens)
                 break
-                
+
         assert len(text) == 2000
         check_keywords(text)
-
 
     # ── Profanity ─────────────────────────────────────────────────────────────
 
@@ -300,7 +267,6 @@ class TestLayer2Keywords:
 
     def test_passes_all_caps_short_text(self):
         # All-caps check only applies when >30 letters; this text has <30 letters
-        # Use 20+ chars to pass length check but keep letters under 30
         check_keywords("DENGUE IN KANDY AREA.")
 
     def test_blocks_low_word_variety_spam(self):
@@ -324,208 +290,155 @@ class TestLayer2Keywords:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LAYER 3 — Detoxify ML Toxicity Detection (monkeypatched)
+# LAYER 3 — Groq Combined: Health Validity + Toxicity (monkeypatched)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestLayer3Toxicity:
-    """Layer 3: check_toxicity() — ML scoring via Detoxify (mocked)."""
+class TestLayer3Groq:
+    """
+    Layer 3: check_with_groq() — combined health-validity and toxicity check.
 
-    def _make_model(self, scores: dict):
-        """Create a fake Detoxify model that returns fixed scores."""
-        class FakeDetoxify:
-            def predict(self, text: str):
-                return scores
-        return FakeDetoxify()
+    The Groq API is monkeypatched throughout.  Three response codes are tested:
+      VALID      — genuine health report, no toxicity     → pass
+      TOXIC      — harmful / threatening / hateful        → ValueError("harmful")
+      IRRELEVANT — spam / off-topic / non-health          → ValueError("health or disease")
+    """
 
-    def test_blocks_high_toxicity(self, monkeypatch):
-        import utils.content_filter as cf
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", self._make_model({
-            "toxicity": 0.92, "severe_toxicity": 0.10,
-            "insult": 0.10, "threat": 0.10,
-            "identity_attack": 0.10, "obscene": 0.10,
-        }))
-        with pytest.raises(ValueError, match="harmful"):
-            check_toxicity("Some toxic report content.")
+    # ── Helper to build a fake Groq client ───────────────────────────────────
 
-    def test_blocks_high_insult(self, monkeypatch):
-        import utils.content_filter as cf
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", self._make_model({
-            "toxicity": 0.30, "severe_toxicity": 0.10,
-            "insult": 0.80, "threat": 0.10,
-            "identity_attack": 0.10, "obscene": 0.10,
-        }))
-        with pytest.raises(ValueError, match="harmful"):
-            check_toxicity("Report with insulting content.")
+    @staticmethod
+    def _fake_groq(answer: str):
+        """Return (monkeypatch-ready) fake httpx.AsyncClient that yields `answer`."""
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"choices": [{"message": {"content": answer}}]}
 
-    def test_blocks_high_threat(self, monkeypatch):
-        import utils.content_filter as cf
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", self._make_model({
-            "toxicity": 0.20, "severe_toxicity": 0.10,
-            "insult": 0.10, "threat": 0.85,
-            "identity_attack": 0.10, "obscene": 0.10,
-        }))
-        with pytest.raises(ValueError, match="harmful"):
-            check_toxicity("Report containing a threatening phrase.")
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *_):
+                pass
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
 
-    def test_blocks_identity_attack(self, monkeypatch):
-        import utils.content_filter as cf
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", self._make_model({
-            "toxicity": 0.40, "severe_toxicity": 0.10,
-            "insult": 0.20, "threat": 0.10,
-            "identity_attack": 0.75, "obscene": 0.10,
-        }))
-        with pytest.raises(ValueError):
-            check_toxicity("Report targeting a specific ethnic group.")
+        return FakeClient
 
-    def test_passes_valid_clinical_text(self, monkeypatch):
-        import utils.content_filter as cf
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", self._make_model({
-            "toxicity": 0.02, "severe_toxicity": 0.01,
-            "insult": 0.01, "threat": 0.01,
-            "identity_attack": 0.01, "obscene": 0.01,
-        }))
-        check_toxicity(VALID_REPORT)  # should not raise
-
-    def test_passes_when_model_unavailable(self, monkeypatch):
-        """If Detoxify fails to load, layer 3 is skipped silently."""
-        import utils.content_filter as cf
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", None)
-        check_toxicity("Any text at all — layer 3 is skipped.")
-
-    def test_skips_on_model_inference_error(self, monkeypatch):
-        """Runtime errors during prediction should not block the request."""
-        import utils.content_filter as cf
-
-        class BrokenModel:
-            def predict(self, text):
-                raise RuntimeError("CUDA out of memory")
-
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", BrokenModel())
-        check_toxicity("Report text that causes a model crash.")  # should not raise
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LAYER 4 — Groq Health Relevance AI Classifier (monkeypatched)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestLayer4HealthRelevance:
-    """Layer 4: check_health_relevance() — Groq LLM health classifier."""
-
-    # ── Health keyword shortcut (no Groq call) ────────────────────────────────
+    # ── Fast-path shortcut (no Groq call needed) ──────────────────────────────
 
     @pytest.mark.asyncio
     async def test_passes_via_shortcut_dengue(self):
-        """Text with a known health keyword skips the Groq call entirely."""
-        await check_health_relevance(
+        """Text with a recognised health keyword + no toxicity → skips Groq."""
+        await check_with_groq(
             "Dengue cases rising in Colombo with severe fever and joint pain."
         )
 
     @pytest.mark.asyncio
     async def test_passes_via_shortcut_outbreak(self):
-        await check_health_relevance(
+        await check_with_groq(
             "An outbreak of cholera was detected near the Kelani river basin."
         )
 
     @pytest.mark.asyncio
     async def test_passes_via_shortcut_symptoms(self):
-        await check_health_relevance(
+        await check_with_groq(
             "Patients reporting symptoms of high fever, vomiting, and fatigue."
         )
 
-    # ── Groq mocked: valid health report → YES ────────────────────────────────
+    # ── Groq → VALID ──────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_passes_when_groq_returns_yes(self, monkeypatch):
+    async def test_passes_when_groq_returns_valid(self, monkeypatch):
         import utils.content_filter as cf
-
-        class FakeResponse:
-            status_code = 200
-            def json(self):
-                return {
-                    "choices": [{"message": {"content": "YES"}}]
-                }
-
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *_):
-                pass
-            async def post(self, *args, **kwargs):
-                return FakeResponse()
-
-        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: FakeClient())
+        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: self._fake_groq("VALID")())
         monkeypatch.setenv("GROQ_API_KEY", "fake-key")
-
-        # Text with no health keywords → goes through Groq path
-        await check_health_relevance(
+        # No health keyword → goes through Groq path
+        await check_with_groq(
             "People in the village reported feeling unwell after the last few days."
         )
 
-    # ── Groq mocked: spam report → NO ────────────────────────────────────────
+    # ── Groq → IRRELEVANT ─────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_blocks_when_groq_returns_no(self, monkeypatch):
+    async def test_blocks_when_groq_returns_irrelevant(self, monkeypatch):
         import utils.content_filter as cf
-
-        class FakeResponse:
-            status_code = 200
-            def json(self):
-                return {
-                    "choices": [{"message": {"content": "NO"}}]
-                }
-
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *_):
-                pass
-            async def post(self, *args, **kwargs):
-                return FakeResponse()
-
-        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: FakeClient())
+        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: self._fake_groq("IRRELEVANT")())
         monkeypatch.setenv("GROQ_API_KEY", "fake-key")
-
         with pytest.raises(ValueError, match="health or disease incident"):
-            await check_health_relevance(
+            await check_with_groq(
                 "My cat is feeling sad and I am very upset about the weather today."
             )
 
     @pytest.mark.asyncio
     async def test_blocks_promotional_content(self, monkeypatch):
         import utils.content_filter as cf
-
-        class FakeResponse:
-            status_code = 200
-            def json(self):
-                return {"choices": [{"message": {"content": "NO"}}]}
-
-        class FakeClient:
-            async def __aenter__(self): return self
-            async def __aexit__(self, *_): pass
-            async def post(self, *a, **kw): return FakeResponse()
-
-        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: FakeClient())
+        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: self._fake_groq("IRRELEVANT")())
         monkeypatch.setenv("GROQ_API_KEY", "fake-key")
-
-        with pytest.raises(ValueError):
-            await check_health_relevance(
+        with pytest.raises(ValueError, match="health or disease incident"):
+            await check_with_groq(
                 "You have been selected as our special prize winner this month."
             )
+
+    # ── Groq → TOXIC ─────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_blocks_when_groq_returns_toxic(self, monkeypatch):
+        import utils.content_filter as cf
+        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: self._fake_groq("TOXIC")())
+        monkeypatch.setenv("GROQ_API_KEY", "fake-key")
+        with pytest.raises(ValueError, match="harmful"):
+            await check_with_groq(
+                "I will kill all the patients in that hospital right now."
+            )
+
+    @pytest.mark.asyncio
+    async def test_blocks_hate_speech_via_groq(self, monkeypatch):
+        import utils.content_filter as cf
+        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: self._fake_groq("TOXIC")())
+        monkeypatch.setenv("GROQ_API_KEY", "fake-key")
+        with pytest.raises(ValueError, match="harmful"):
+            # No health keyword → Groq is called; no hard-toxicity signal → not short-circuited
+            await check_with_groq(
+                "People of that community should be removed from this area entirely."
+            )
+
+    # ── Hard toxicity signals bypass the health-keyword fast-path ────────────
+
+    @pytest.mark.asyncio
+    async def test_hard_toxicity_signal_overrides_health_shortcut(self, monkeypatch):
+        """
+        Even if a health keyword is present, a hard toxicity phrase must force
+        the Groq call rather than taking the fast-path.
+        """
+        import utils.content_filter as cf
+        groq_was_called = []
+
+        class TrackingClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): pass
+            async def post(self, *a, **kw):
+                groq_was_called.append(True)
+                class R:
+                    status_code = 200
+                    def json(self):
+                        return {"choices": [{"message": {"content": "TOXIC"}}]}
+                return R()
+
+        monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: TrackingClient())
+        monkeypatch.setenv("GROQ_API_KEY", "fake-key")
+
+        # "fever" is a health shortcut but "i will kill" is a hard toxicity signal
+        with pytest.raises(ValueError, match="harmful"):
+            await check_with_groq("I will kill the fever patients in that clinic.")
+
+        assert groq_was_called, "Groq should have been called — hard toxicity overrides shortcut"
 
     # ── Graceful degradation ──────────────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_skips_when_groq_key_missing(self, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
-        # Should not raise even for non-health text
-        await check_health_relevance("Some random text with no health keywords.")
+        # Should not raise even for non-health text (no key → skip)
+        await check_with_groq("Some random text with no health keywords.")
 
     @pytest.mark.asyncio
     async def test_skips_when_groq_returns_non_200(self, monkeypatch):
@@ -533,8 +446,7 @@ class TestLayer4HealthRelevance:
 
         class FakeResponse:
             status_code = 500
-            def json(self):
-                return {}
+            def json(self): return {}
 
         class FakeClient:
             async def __aenter__(self): return self
@@ -543,7 +455,7 @@ class TestLayer4HealthRelevance:
 
         monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: FakeClient())
         monkeypatch.setenv("GROQ_API_KEY", "fake-key")
-        await check_health_relevance("Some text with no health keywords.")  # no raise
+        await check_with_groq("Some text with no health keywords.")  # must not raise
 
     @pytest.mark.asyncio
     async def test_skips_on_network_error(self, monkeypatch):
@@ -557,7 +469,7 @@ class TestLayer4HealthRelevance:
 
         monkeypatch.setattr(cf.httpx, "AsyncClient", lambda **kw: FailingClient())
         monkeypatch.setenv("GROQ_API_KEY", "fake-key")
-        await check_health_relevance("Some text that would go to Groq.")  # no raise
+        await check_with_groq("Some text that would go to Groq.")  # must not raise
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -566,24 +478,14 @@ class TestLayer4HealthRelevance:
 
 class TestFullPipeline:
     """
-    run_content_filter_pipeline() — integration tests for the full 4-layer pipeline.
-    Detoxify and Groq are mocked so tests run offline.
+    run_content_filter_pipeline() — integration tests for the 3-layer pipeline.
+    Groq is mocked so tests run offline.
     """
 
-    def _patch_pipeline(self, monkeypatch, *, toxicity_score=0.01, groq_answer="YES"):
-        """Patch Layers 3 & 4 to non-blocking mocks."""
+    @staticmethod
+    def _patch_groq(monkeypatch, *, groq_answer: str = "VALID"):
+        """Patch Layer 3 Groq call with a fixed answer."""
         import utils.content_filter as cf
-
-        class FakeModel:
-            def predict(self, text):
-                return {
-                    "toxicity": toxicity_score, "severe_toxicity": 0.01,
-                    "insult": 0.01, "threat": 0.01,
-                    "identity_attack": 0.01, "obscene": 0.01,
-                }
-
-        monkeypatch.setattr(cf, "_detoxify_attempted", True)
-        monkeypatch.setattr(cf, "_detoxify_model", FakeModel())
 
         class FakeResponse:
             status_code = 200
@@ -602,12 +504,12 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_passes_valid_dengue_report(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         await run_content_filter_pipeline(VALID_REPORT)
 
     @pytest.mark.asyncio
     async def test_passes_cholera_report(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         await run_content_filter_pipeline(
             "Cholera outbreak confirmed in Trincomalee. 15 patients admitted "
             "to Trincomalee General Hospital with severe diarrhoea and dehydration."
@@ -615,7 +517,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_passes_food_poisoning_report(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         await run_content_filter_pipeline(
             "Approximately 20 school children in Matara reported vomiting and "
             "stomach pain after consuming food from the school canteen on Monday."
@@ -626,7 +528,7 @@ class TestFullPipeline:
     @pytest.mark.asyncio
     async def test_pipeline_blocks_user_example(self, monkeypatch):
         """The exact example from the user's bug report."""
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError):
             await run_content_filter_pipeline(
                 "disease has been reported. get here to follow this link to get my data"
@@ -634,7 +536,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_http_link(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError):
             await run_content_filter_pipeline(
                 "Ten dengue cases in Gampaha — see http://spam.example.com for data."
@@ -642,7 +544,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_www_link(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError):
             await run_content_filter_pipeline(
                 "Outbreak in Kandy — track at www.spamsite.com"
@@ -652,7 +554,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_profanity(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError):
             await run_content_filter_pipeline(
                 "The fucking hospital in Colombo is full of dengue patients "
@@ -661,7 +563,7 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_spam_phrase(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError):
             await run_content_filter_pipeline(
                 "Buy now the antiviral medicine before the outbreak spreads "
@@ -670,34 +572,35 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_too_short(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError, match="too short"):
             await run_content_filter_pipeline("Fever.")
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_all_caps(self, monkeypatch):
-        self._patch_pipeline(monkeypatch)
+        self._patch_groq(monkeypatch)
         with pytest.raises(ValueError, match="ALL CAPS"):
             await run_content_filter_pipeline(
                 "DENGUE FEVER HAS BEEN REPORTED IN GAMPAHA WITH TEN CONFIRMED CASES."
             )
 
-    # ── Should BLOCK (Layer 3) ────────────────────────────────────────────────
+    # ── Should BLOCK (Layer 3 — Groq TOXIC) ──────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_toxic_content(self, monkeypatch):
-        self._patch_pipeline(monkeypatch, toxicity_score=0.92)
+        self._patch_groq(monkeypatch, groq_answer="TOXIC")
         with pytest.raises(ValueError, match="harmful"):
+            # No health keyword in this text → Groq is reached and returns TOXIC
             await run_content_filter_pipeline(
-                "I want to harm the people in that hospital for not treating patients."
+                "I want to cause harm to those people for not doing their jobs properly."
             )
 
-    # ── Should BLOCK (Layer 4) ────────────────────────────────────────────────
+    # ── Should BLOCK (Layer 3 — Groq IRRELEVANT) ─────────────────────────────
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_non_health_via_groq(self, monkeypatch):
-        self._patch_pipeline(monkeypatch, groq_answer="NO")
-        with pytest.raises(ValueError):
+        self._patch_groq(monkeypatch, groq_answer="IRRELEVANT")
+        with pytest.raises(ValueError, match="health or disease incident"):
             await run_content_filter_pipeline(
                 "My pet cat has been acting strange lately and I am very worried "
                 "about what might happen to it in the coming weeks."
@@ -705,29 +608,28 @@ class TestFullPipeline:
 
     @pytest.mark.asyncio
     async def test_pipeline_blocks_personal_grievance(self, monkeypatch):
-        self._patch_pipeline(monkeypatch, groq_answer="NO")
-        with pytest.raises(ValueError):
+        self._patch_groq(monkeypatch, groq_answer="IRRELEVANT")
+        with pytest.raises(ValueError, match="health or disease incident"):
             await run_content_filter_pipeline(
                 "The government is corrupt and the people are suffering because "
                 "of bad policies that have been implemented over the last decade."
             )
 
-    # ── Short-circuit ordering — Layer 1 fires before deeper layers ──────────
+    # ── Short-circuit ordering — Layer 1 fires before Layer 3 ────────────────
 
     @pytest.mark.asyncio
     async def test_layer1_fires_before_groq(self, monkeypatch):
-        """Verify Layer 1 (fast) stops the pipeline before Layer 4 (expensive)."""
-        self._patch_pipeline(monkeypatch, groq_answer="NO")
+        """Verify Layer 1 (fast) stops the pipeline before Layer 3 (expensive Groq)."""
+        import utils.content_filter as cf
         groq_called = []
 
-        import utils.content_filter as cf
-        original = cf.check_health_relevance
+        original = cf.check_with_groq
 
         async def tracking_check(text):
             groq_called.append(text)
             await original(text)
 
-        monkeypatch.setattr(cf, "check_health_relevance", tracking_check)
+        monkeypatch.setattr(cf, "check_with_groq", tracking_check)
 
         with pytest.raises(ValueError):
             await run_content_filter_pipeline(
