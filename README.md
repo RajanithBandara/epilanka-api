@@ -1,60 +1,75 @@
-# Epilanka API
+# EpiLanka API
 
-Epilanka API is a robust backend service built with FastAPI, designed to manage disease-related reports, user profiles, and geographical mapping for the Epilanka platform. It utilizes a multi-database architecture and integrates with various modern services for authentication, storage, real-time communication, and AI-driven features.
+<p align="center">
+  <strong>A FastAPI backend for disease-surveillance reporting, district analytics, user management, and real-time communication.</strong>
+</p>
 
-## Features
+<p align="center">
+  MongoDB • PostgreSQL • Redis • Appwrite • Socket.IO • Pytest
+</p>
 
-- **User Management**: Profile management synchronized with Appwrite authentication.
-- **Disease Data CRUD**: Manage disease information including names, descriptions, and thresholds.
-- **Reporting System**: Submit and process disease occurrences with image support (stored in R2).
-- **Geographical Mapping**: Coordinate-based location services and population density data.
-- **Real-time Notifications**: Live updates via Socket.IO for critical alerts and chat.
-- **AI Integration**: Content filtering and data extraction powered by Gemini and Groq.
-- **Security**: 
-  - `x-api-key` protection for all endpoints.
-  - JWT-based authorization (via Appwrite).
-  - CORS middleware for secure frontend integration.
-- **Database Migrations**: PostgreSQL schema management using Alembic.
-- **Caching**: Performance optimization using Redis for heavy read operations.
-- **Containerization**: Fully dockerized for consistent development and deployment.
+---
 
-## Technologies Used
+## ✨ Highlights
 
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/)
-- **Real-time**: [python-socketio](https://python-socketio.readthedocs.io/) (Socket.IO)
-- **AI/ML**: [Google Gemini](https://ai.google.dev/), [Groq](https://groq.com/), [Detoxify](https://github.com/unitaryai/detoxify)
-- **Databases**: 
-  - [PostgreSQL](https://www.postgresql.org/) (SQLAlchemy & asyncpg) — Relational data & reporting.
-  - [MongoDB](https://www.mongodb.com/) (Motor for async) — Profile & unstructured data.
-  - [Redis](https://redis.io/) — Read-through caching.
-- **Authentication**: [Appwrite](https://appwrite.io/)
-- **Storage**: [Cloudflare R2](https://www.cloudflare.com/products/r2/) (S3-compatible) — Image uploads.
-- **Migrations**: [Alembic](https://alembic.sqlalchemy.org/)
-- **Testing**: [Pytest](https://docs.pytest.org/)
-- **Containerization**: Docker & Docker Compose
+- **Appwrite authentication** with JWT token passing and `x-api-key` protection for server requests
+- **Health report submission** with a 4-layer content filter for links, spam, toxicity, and health relevance
+- **District analytics** for recent reports, metadata, historical chart data, and weekly records
+- **Socket.IO support** for chat and notifications
+- **Redis caching** for expensive read endpoints, with a 7-day default cache TTL
+- **Offline-friendly tests** that run with `TESTING=1` to bypass live services
 
-## Getting Started
+## 🧱 Architecture at a glance
 
-### Prerequisites
+- `main.py` wraps the FastAPI app with Socket.IO and sets up middleware, startup, and shutdown
+- `config/db.py` manages MongoDB sync/async connections
+- `config/postgredb.py` manages PostgreSQL async/sync engines and session factories
+- `controllers/` contains the application logic for reports, users, maps, notifications, and analytics
+- `routes/` exposes the FastAPI endpoints
+- `utils/` contains auth, Redis, WebSocket, Appwrite, and content-filter utilities
+
+## 🔎 Content filtering pipeline
+
+When users submit report text, the API checks it in this order:
+
+1. **Links / promotional phrases** — blocks URLs and obvious call-to-action spam
+2. **Keywords / spam / profanity** — rejects short, repeated, or spammy content
+3. **Toxicity scoring** — optional Detoxify check when installed
+4. **Health relevance** — optional Groq classifier when `GROQ_API_KEY` is set
+
+The pipeline is optimized to fail fast on cheap checks and skip expensive checks when the text is already clearly valid.
+
+## 🛠️ Tech stack
+
+| Layer | Tools |
+|---|---|
+| API | FastAPI |
+| Realtime | Socket.IO (`python-socketio`) |
+| Auth | Appwrite |
+| Databases | MongoDB, PostgreSQL |
+| Cache | Redis |
+| ORM / Validation | SQLAlchemy, Motor, AsyncPG, Pydantic |
+| Testing | Pytest, pytest-asyncio |
+| Deployment | Uvicorn, Docker, Docker Compose, GitHub Actions |
+
+## ✅ Requirements
 
 - Python 3.12+
-- PostgreSQL instance
-- MongoDB instance (local or Atlas)
-- Redis instance
-- Appwrite Project (for authentication)
-- Cloudflare R2 Bucket (for image storage)
-- Gemini & Groq API Keys (for AI features)
-- Docker & Docker Compose (optional)
+- MongoDB
+- PostgreSQL
+- Redis (optional, but recommended)
+- Appwrite project and server API key
+- Groq API key for the optional health relevance check
+- Docker and Docker Compose (optional)
 
-### Environment Variables
+## 🔐 Environment variables
 
-Create a `.env` file in the root directory based on the following template:
+Create a `.env` file in the project root:
 
 ```env
-# General
+# App security
 API_SECRET_KEY=your_shared_api_key
 FRONTEND_URL=http://localhost:3000
-JWT_SECRET=your_jwt_secret
 
 # PostgreSQL
 POSTGRE_HOST=localhost
@@ -64,102 +79,95 @@ POSTGRE_USER=postgres
 POSTGRE_PASSWORD=your_password
 
 # MongoDB
-MONGODB_URI=mongodb+srv://...
+MONGODB_URI=mongodb://127.0.0.1:27017/epilanka
 
 # Redis
-REDIS_PUBLIC_URL=redis://...
+REDIS_URL=redis://localhost:6379/0
+# REDIS_PUBLIC_URL can also be used if your deployment provides that instead
 
 # Appwrite
 APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
 APPWRITE_PROJECT_ID=your_project_id
 APPWRITE_API_KEY=your_server_api_key
-APPWRITE_PROJECT_NAME=epilanka
-APPWRITE_CHAT_DB_ID=...
-APPWRITE_CHAT_COLLECTION_ID=...
 
-# Cloudflare R2
-R2_ACCOUNT_ID=your_account_id
-R2_ACCESS_KEY=your_access_key
-R2_SECRET_KEY=your_secret_key
-R2_BUCKET_NAME=epilanka
-R2_PUBLIC_BASE_URL=https://...
-
-# AI APIs
-GEMINI_API_KEY=your_gemini_key
+# Optional AI filter
 GROQ_API_KEY=your_groq_key
 ```
 
-### Installation
+## 🚀 Quick start
 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd epilanka-api
-   ```
+### 1) Create a virtual environment
 
-2. **Setup Virtual Environment**:
-   ```bash
-   python -m venv venv
-   # On Windows:
-   .\venv\Scripts\activate
-   # On Linux/macOS:
-   source venv/bin/activate
-   ```
-
-3. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run Migrations**:
-   ```bash
-   alembic upgrade head
-   ```
-
-5. **Run the Application**:
-   ```bash
-   uvicorn main:app --reload
-   ```
-   The API will be available at `http://localhost:8000`.
-
-### Using Docker
-
-```bash
-docker-compose up --build
+```powershell
+python -m venv venv
+.\venv\Scripts\activate
 ```
 
-## Project Structure
+### 2) Install dependencies
 
-- `alembic/`: Database migration scripts and configuration.
-- `config/`: Database connection managers (MongoDB, PostgreSQL).
-- `controllers/`: Business logic and database operations.
-- `models/`: SQLAlchemy (Postgres) and Pydantic models.
-- `routes/`: FastAPI route definitions.
-- `schemas/`: Pydantic schemas for data validation.
-- `scripts/`: Helper scripts including the test runner.
-- `tests/`: Pytest test suite.
-- `utils/`: Utilities for Auth, Storage, Redis, WebSockets, and AI filters.
-- `main.py`: Entry point wrapping FastAPI with Socket.IO.
+```powershell
+pip install -r requirements.txt
+```
 
-## Scripts & Commands
+### 3) Run database migrations
 
-- **Seeding**:
-  - `python seed_admin_user.py`: Populate initial admin user data.
-  - `python seed_officer_user.py`: Populate initial officer user data.
-- **Setup**:
-  - `python setup_notifications.py`: Initialize notification templates/settings.
-- **Testing**:
-  - `test.bat [quick|full|report|coverage|watch]`: Windows test runner.
-  - `python scripts/run_tests.py [--full] [--html] [--coverage]`: Platform-independent test runner.
-  - `pytest`: Run tests directly using the configuration in `pytest.ini`.
+```powershell
+alembic upgrade head
+```
 
-## API Documentation
+### 4) Start the API
 
-- **Swagger UI**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ReDoc**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+```powershell
+uvicorn main:app --reload
+```
 
-*Note: All requests require the `x-api-key` header matching your `API_SECRET_KEY`.*
+The ASGI entrypoint is `main:app` because the FastAPI app is wrapped with Socket.IO in `main.py`.
 
-## License
+## 🧪 Testing
 
-[TODO: Add License Information]
+The test suite is designed to run offline with test-safe fallbacks.
+
+### Run all tests
+
+```powershell
+$env:TESTING='1'
+python -m pytest tests -q
+```
+
+### Visual runners
+
+```powershell
+.\test.ps1 quick
+.\test.ps1 full
+.\test.ps1 report
+python scripts/run_tests.py --full
+python scripts/run_tests.py --html
+```
+
+## 📦 Utility scripts
+
+- `python seed_admin_user.py` — create an admin Appwrite user
+- `python seed_officer_user.py` — create an officer Appwrite user
+- `python setup_notifications.py` — initialize notification setup
+
+## 📁 Project structure
+
+| Path | Purpose |
+|---|---|
+| `config/` | MongoDB and PostgreSQL connection helpers |
+| `controllers/` | Business logic for reports, users, maps, notifications, and analytics |
+| `models/` | SQLAlchemy and Pydantic models |
+| `routes/` | FastAPI route definitions |
+| `tests/` | Automated tests for endpoints and content filtering |
+| `utils/` | Auth, Redis, WebSocket, Appwrite, and content-filter utilities |
+| `main.py` | FastAPI entrypoint wrapped with Socket.IO |
+
+## ⚠️ Notes
+
+- API requests require the `x-api-key` header in non-test mode.
+- Swagger / ReDoc are disabled in `main.py`.
+- If Redis or Groq is not configured, the app falls back gracefully and continues serving requests.
+
+## 📄 License
+
+Add your license here.
