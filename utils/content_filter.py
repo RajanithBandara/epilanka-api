@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from typing import Any
 
 import httpx
 
@@ -53,12 +54,12 @@ _LINK_PATTERNS: list[str] = [
     r"\bsign\s+up\s+(?:now|here)\b",
 ]
 
-_LINK_RE = re.compile("|".join(_LINK_PATTERNS), re.IGNORECASE)
+_LINK_RE = re.compile("|".join(_LINK_PATTERNS))
 
 
 def check_links(text: str) -> None:
     """Layer 1 — block any URLs, link-like patterns, or call-to-action phrases."""
-    m = _LINK_RE.search(text)
+    m = _LINK_RE.search(text.casefold())
     if m:
         raise ValueError(
             "Reports cannot contain links, URLs, or promotional phrases "
@@ -94,20 +95,28 @@ _EXTRA_SPAM_WORDS: list[str] = [
     "shit", "fucking", "fuck", "fucked", "bitch", "asshole",
 ]
 
-try:
-    from better_profanity import profanity as _prof
+_prof: Any = None
 
-    _prof.load_censor_words()
-    _prof.add_censor_words(_EXTRA_SPAM_WORDS)
+try:
+    from better_profanity import profanity as _better_profanity
+
+    _better_profanity.load_censor_words()
+    _better_profanity.add_censor_words(_EXTRA_SPAM_WORDS)
+    _prof = _better_profanity
     _USE_BP = True
     logger.info("[ContentFilter] better-profanity dataset loaded.")
 except ImportError:
+    _prof = None
+    _better_profanity = None
     _USE_BP = False
     _FALLBACK_RE = re.compile(
         r"\b(" + "|".join(re.escape(w) for w in _EXTRA_SPAM_WORDS) + r")\b",
-        re.IGNORECASE,
     )
     logger.warning("[ContentFilter] better-profanity not available; using fallback list.")
+
+_EXTRA_SPAM_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _EXTRA_SPAM_WORDS) + r")\b",
+)
 
 # Additional hard-coded patterns for structural spam
 _SPAM_STRUCT_PATTERNS = re.compile(
@@ -121,15 +130,26 @@ def check_keywords(text: str) -> None:
     """Layer 2 — block profanity, spam keywords, and structural spam."""
 
     # Length guards
-    if len(text) < 20:
+    text_len = len(text)
+    if text_len < 20:
         raise ValueError(
             "Report is too short. Please provide at least 20 characters "
             "describing the health incident."
         )
-    if len(text) > 2000:
+    if text_len > 2000:
         raise ValueError(
             "Report exceeds the maximum length of 2,000 characters. "
             "Please shorten your description."
+        )
+
+    text_cf = text.casefold()
+
+    # Fast pre-scan for the most common spam/promotional phrases.
+    # This catches obvious abuse before calling the heavier profanity engine.
+    if _EXTRA_SPAM_RE.search(text_cf):
+        raise ValueError(
+            "Your report contains inappropriate or spam content. "
+            "Please keep submissions related to health incidents only."
         )
 
     # Profanity / spam keyword check
@@ -164,7 +184,7 @@ def check_keywords(text: str) -> None:
             )
 
     # Low word variety — copy-paste spam
-    words = re.findall(r"\w+", text.lower())
+    words = re.findall(r"\w+", text_cf)
     if len(words) >= 10:
         if (len(set(words)) / len(words)) < 0.3:
             raise ValueError(
