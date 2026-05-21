@@ -41,6 +41,7 @@ coverage.xml
 htmlcov/
 .mypy_cache/
 .pylint.d/
+.ruff_cache/
 
 # Logs
 *.log

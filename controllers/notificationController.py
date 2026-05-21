@@ -1,9 +1,11 @@
 """
 Notification Controller
-Handles all notification database operations for MongoDB
+Handles broadcast notification database operations for MongoDB.
+All notifications are global — they are delivered to every user.
 """
 
 from datetime import datetime, timezone
+from typing import Optional
 from config.db import get_database
 from models.notificationModel import NotificationCreate, NotificationUpdate
 import uuid
@@ -14,142 +16,214 @@ def get_database_connection():
     return get_database()
 
 
+def _serialize_doc(doc: dict) -> dict:
+    """
+    Normalise a raw MongoDB notification document for API responses.
+    - Converts ObjectId _id → plain string
+    - Converts any datetime fields → ISO-8601 string
+    - Guarantees the returned dict never contains raw datetime objects,
+      so JSON serialisation never raises 'str has no isoformat' errors.
+    """
+    doc = dict(doc)
+
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+
+    for field in ("created_at", "read_at"):
+        val = doc.get(field)
+        if isinstance(val, datetime):
+            doc[field] = val.isoformat()
+        # If already a string or None, leave it alone
+
+    # Ensure required fields have sensible defaults
+    doc.setdefault("title", None)
+    doc.setdefault("category", "system")
+    doc.setdefault("metadata", {})
+    doc.setdefault("read", False)
+    doc.setdefault("read_at", None)
+
+    return doc
+
+
+# ── Write operations ─────────────────────────────────────────────────────────
+
 def create_notification(notification_data: NotificationCreate) -> dict:
     """
-    Create a new notification in the database
-    
+    Insert a new broadcast notification and return the serialised document.
+
     Args:
-        notification_data: NotificationCreate object with notification details
-        
+        notification_data: Validated NotificationCreate payload
+
     Returns:
-        dict: Created notification document with _id
+        Fully serialised notification dict (all datetimes as ISO strings)
     """
     db = get_database_connection()
     notifications = db["notifications"]
-    
+
+    now = datetime.now(timezone.utc)
+
     doc = {
-        "notification_id": notification_data.notification_id if hasattr(notification_data, 'notification_id') else f"notif_{uuid.uuid4().hex[:12]}",
+        "notification_id": f"notif_{uuid.uuid4().hex[:12]}",
+        "title": notification_data.title or None,
         "text": notification_data.text,
-        "severity": notification_data.severity.value if hasattr(notification_data.severity, 'value') else notification_data.severity,
-        "user_id": notification_data.user_id,
-        "created_at": datetime.now(timezone.utc),
+        "severity": (
+            notification_data.severity.value
+            if hasattr(notification_data.severity, "value")
+            else notification_data.severity
+        ),
+        "category": (
+            notification_data.category.value
+            if hasattr(notification_data.category, "value")
+            else notification_data.category
+        ),
+        "created_at": now,          # stored as datetime in MongoDB
         "read": False,
         "read_at": None,
         "metadata": notification_data.metadata or {},
     }
-    
+
     result = notifications.insert_one(doc)
     doc["_id"] = str(result.inserted_id)
-    return doc
+
+    # Serialise datetimes AFTER capturing the inserted_id so the returned
+    # dict is safe for JSON encoding.
+    return _serialize_doc(doc)
 
 
-def get_notification_by_id(notification_id: str, user_id: str) -> dict | None:
+def get_notification_by_id(notification_id: str) -> dict | None:
     """
-    Get a specific notification by ID for a user
-    
+    Get a specific broadcast notification by its notification_id.
+
     Args:
-        notification_id: The notification_id field
-        user_id: The user to retrieve for
-        
+        notification_id: The notification_id field value
+
     Returns:
-        dict: Notification document or None if not found
+        Serialised notification dict or None
     """
     db = get_database_connection()
     notifications = db["notifications"]
-    
-    notification = notifications.find_one({
-        "notification_id": notification_id,
-        "$or": [
-            {"user_id": user_id},
-            {"user_id": None}
-        ]
-    })
-    
-    if notification:
-        notification["_id"] = str(notification["_id"])
-    
-    return notification
+
+    doc = notifications.find_one({"notification_id": notification_id})
+    return _serialize_doc(doc) if doc else None
 
 
-def get_user_notifications(user_id: str, skip: int = 0, limit: int = 20, unread_only: bool = False) -> tuple[list, int]:
+def get_all_notifications(
+    skip: int = 0,
+    limit: int = 20,
+    unread_only: bool = False,
+    since: Optional[str] = None,
+    category: Optional[str] = None,
+    severity: Optional[str] = None,
+) -> tuple[list, int]:
     """
-    Get notifications for a specific user, paginated
-    
+    Fetch broadcast notifications with optional filters.
+
     Args:
-        user_id: The user ID
-        skip: Number of records to skip for pagination
-        limit: Maximum number of records to return
+        skip:        Pagination offset
+        limit:       Max records to return (capped at 100)
         unread_only: If True, only return unread notifications
-        
+        since:       ISO datetime string — return only docs created after this
+        category:    Filter by category string
+        severity:    Filter by severity string
+
     Returns:
-        tuple: (list of notifications, total count)
+        (list of serialised notifications, total matching count)
     """
     db = get_database_connection()
     notifications = db["notifications"]
-    
-    query = {
-        "$or": [
-            {"user_id": user_id},
-            {"user_id": None}
-        ]
-    }
-    
+
+    query: dict = {}
+
     if unread_only:
         query["read"] = False
-    
-    # Count total matching documents
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            query["created_at"] = {"$gt": since_dt}
+        except ValueError:
+            pass  # malformed since — ignore, return full list
+
+    if category:
+        query["category"] = category
+
+    if severity:
+        query["severity"] = severity
+
     total = notifications.count_documents(query)
-    
-    # Find with pagination, sorted by created_at descending (newest first)
-    notif_list = list(notifications.find(query)
-                     .sort("created_at", -1)
-                     .skip(skip)
-                     .limit(limit))
-    
-    for notif in notif_list:
-        notif["_id"] = str(notif["_id"])
-    
-    return notif_list, total
+
+    notif_list = list(
+        notifications.find(query)
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(min(limit, 100))
+    )
+
+    return [_serialize_doc(n) for n in notif_list], total
 
 
-def mark_notification_as_read(notification_id: str, user_id: str) -> bool:
+def mark_notification_as_read(notification_id: str) -> bool:
     """
-    Mark a notification as read
-    
-    Args:
-        notification_id: The notification_id field
-        user_id: The user ID
-        
+    Mark a single notification as read (global — not user-scoped).
+
     Returns:
-        bool: True if updated, False if not found
+        True if a document was updated, False if not found
     """
     db = get_database_connection()
     notifications = db["notifications"]
-    
+
     result = notifications.update_one(
-        {
-            "notification_id": notification_id,
-            "$or": [
-                {"user_id": user_id},
-                {"user_id": None}
-            ]
-        },
+        {"notification_id": notification_id},
         {
             "$set": {
                 "read": True,
-                "read_at": datetime.now(timezone.utc)
+                "read_at": datetime.now(timezone.utc),
             }
-        }
+        },
     )
-    
     return result.modified_count > 0
 
 
-def update_notification(notification_id: str, user_id: str, update_data: NotificationUpdate) -> bool:
+def mark_all_notifications_as_read() -> int:
     """
-    Update a notification for a user.
+    Mark ALL unread notifications as read.
 
-    Supports editing text, severity, metadata and read state.
+    Returns:
+        Number of documents updated
+    """
+    db = get_database_connection()
+    notifications = db["notifications"]
+
+    result = notifications.update_many(
+        {"read": False},
+        {
+            "$set": {
+                "read": True,
+                "read_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    return result.modified_count
+
+
+def get_unread_count() -> int:
+    """
+    Get the total count of unread broadcast notifications.
+
+    Returns:
+        Integer count
+    """
+    db = get_database_connection()
+    notifications = db["notifications"]
+    return notifications.count_documents({"read": False})
+
+
+def update_notification(notification_id: str, update_data: NotificationUpdate) -> bool:
+    """
+    Update fields on an existing notification.
+
+    Returns:
+        True if updated, False if not found / no changes
     """
     db = get_database_connection()
     notifications = db["notifications"]
@@ -159,8 +233,22 @@ def update_notification(notification_id: str, user_id: str, update_data: Notific
     if update_data.text is not None:
         update_fields["text"] = update_data.text
 
+    if update_data.title is not None:
+        update_fields["title"] = update_data.title
+
     if update_data.severity is not None:
-        update_fields["severity"] = update_data.severity.value if hasattr(update_data.severity, 'value') else update_data.severity
+        update_fields["severity"] = (
+            update_data.severity.value
+            if hasattr(update_data.severity, "value")
+            else update_data.severity
+        )
+
+    if update_data.category is not None:
+        update_fields["category"] = (
+            update_data.category.value
+            if hasattr(update_data.category, "value")
+            else update_data.category
+        )
 
     if update_data.metadata is not None:
         update_fields["metadata"] = update_data.metadata
@@ -173,135 +261,35 @@ def update_notification(notification_id: str, user_id: str, update_data: Notific
         return False
 
     result = notifications.update_one(
-        {
-            "notification_id": notification_id,
-            "$or": [
-                {"user_id": user_id},
-                {"user_id": None}
-            ]
-        },
-        {
-            "$set": update_fields
-        }
+        {"notification_id": notification_id},
+        {"$set": update_fields},
     )
-
     return result.modified_count > 0
 
 
-def mark_all_notifications_as_read(user_id: str) -> int:
+def delete_notification(notification_id: str) -> bool:
     """
-    Mark all notifications for a user as read
-    
-    Args:
-        user_id: The user ID
-        
+    Delete a single notification by notification_id.
+
     Returns:
-        int: Number of notifications marked as read
+        True if deleted, False if not found
     """
     db = get_database_connection()
     notifications = db["notifications"]
-    
-    result = notifications.update_many(
-        {
-            "read": False,
-            "$or": [
-                {"user_id": user_id},
-                {"user_id": None}
-            ]
-        },
-        {
-            "$set": {
-                "read": True,
-                "read_at": datetime.now(timezone.utc)
-            }
-        }
-    )
-    
-    return result.modified_count
 
-
-def get_unread_count(user_id: str) -> int:
-    """
-    Get count of unread notifications for a user
-    
-    Args:
-        user_id: The user ID
-        
-    Returns:
-        int: Count of unread notifications
-    """
-    db = get_database_connection()
-    notifications = db["notifications"]
-    
-    count = notifications.count_documents({
-        "read": False,
-        "$or": [
-            {"user_id": user_id},
-            {"user_id": None}
-        ]
-    })
-    
-    return count
-
-
-def delete_notification(notification_id: str, user_id: str) -> bool:
-    """
-    Delete a notification
-    
-    Args:
-        notification_id: The notification_id field
-        user_id: The user ID
-        
-    Returns:
-        bool: True if deleted, False if not found
-    """
-    db = get_database_connection()
-    notifications = db["notifications"]
-    
-    result = notifications.delete_one({
-        "notification_id": notification_id,
-        "$or": [
-            {"user_id": user_id},
-            {"user_id": None}
-        ]
-    })
-    
+    result = notifications.delete_one({"notification_id": notification_id})
     return result.deleted_count > 0
 
 
-def delete_all_user_notifications(user_id: str) -> int:
+def delete_all_notifications() -> int:
     """
-    Delete all notifications for a user
-    
-    Args:
-        user_id: The user ID
-        
+    Delete ALL notifications from the collection.
+
     Returns:
-        int: Number of notifications deleted
+        Number of documents deleted
     """
     db = get_database_connection()
     notifications = db["notifications"]
-    
-    result = notifications.delete_many({
-        "$or": [
-            {"user_id": user_id},
-            {"user_id": None}
-        ]
-    })
-    
+
+    result = notifications.delete_many({})
     return result.deleted_count
-
-
-def broadcast_notification_to_all(notification_data: NotificationCreate) -> dict:
-    """
-    Create a notification that will be broadcast to all users
-    (user_id will be None)
-    
-    Args:
-        notification_data: NotificationCreate object
-        
-    Returns:
-        dict: Created notification document
-    """
-    notification_data.user_id = None
-    return create_notification(notification_data)

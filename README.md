@@ -137,18 +137,9 @@ python -m pytest tests -q
 ### Visual runners
 
 ```powershell
-.\test.ps1 quick
-.\test.ps1 full
-.\test.ps1 report
 python scripts/run_tests.py --full
 python scripts/run_tests.py --html
 ```
-
-## 📦 Utility scripts
-
-- `python seed_admin_user.py` — create an admin Appwrite user
-- `python seed_officer_user.py` — create an officer Appwrite user
-- `python setup_notifications.py` — initialize notification setup
 
 ## 📁 Project structure
 

@@ -16,13 +16,6 @@ class ExtractedData(BaseModel):
 
 
 
-class Districtwise_Report(BaseModel):
-    report_id: int
-    reported_week: int
-    cases_count: int
-    disease_type: str
-    disease_name: str
-
 class UserReport_Request(BaseModel):
     user_id: str  # MongoDB ObjectId as string
     description: str

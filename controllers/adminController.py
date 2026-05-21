@@ -292,3 +292,184 @@ async def view_tables_postgres(per_table_limit: int = 200, reports_limit: int = 
             return all_data
         except Exception as e:
             return {"error": f"Database error: {e}"}
+
+
+# ── District CRUD (PostgreSQL) ─────────────────────────────────────────────
+
+def get_all_districts_postgres(session) -> list:
+    """Return all districts as a list of dicts."""
+    from models.districtModel import District
+    from models.perdistrictPopulationModel import PerDistrictPopulation
+    results = session.query(District, PerDistrictPopulation).outerjoin(
+        PerDistrictPopulation, District.district_id == PerDistrictPopulation.district_id
+    ).order_by(District.district_id).all()
+    return [
+        {
+            "district_id": d.district_id,
+            "district_name": d.district_name,
+            "province_name": d.province_name,
+            "latitude": d.latitude,
+            "longitude": d.longitude,
+            "population": p.population if p else 0,
+        }
+        for d, p in results
+    ]
+
+
+def create_district_postgres(session, district_id: int, district_name: str, province: str | None = None, population: int | None = None) -> Dict[str, Any]:
+    """Insert a new district row and return it as a dict."""
+    from models.districtModel import District
+    from models.perdistrictPopulationModel import PerDistrictPopulation
+    existing = session.query(District).filter(District.district_id == district_id).first()
+    if existing:
+        return {"error": True, "msg": f"District with id {district_id} already exists"}
+    district = District(
+        district_id=district_id,
+        district_name=district_name,
+        province_name=province or "",
+        latitude=0.0,
+        longitude=0.0,
+    )
+    session.add(district)
+    pop_entry = PerDistrictPopulation(district_id=district_id, population=population or 0)
+    session.add(pop_entry)
+    session.commit()
+    session.refresh(district)
+    return {
+        "district_id": district.district_id,
+        "district_name": district.district_name,
+        "province_name": district.province_name,
+        "latitude": district.latitude,
+        "longitude": district.longitude,
+        "population": pop_entry.population,
+    }
+
+
+def update_district_postgres(session, district_id: int, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Update allowed fields on a district row and return the updated dict."""
+    from models.districtModel import District
+    from models.perdistrictPopulationModel import PerDistrictPopulation
+    district = session.query(District).filter(District.district_id == district_id).first()
+    if not district:
+        return {"error": True, "msg": f"District {district_id} not found"}
+    if "district_name" in updates and updates["district_name"] is not None:
+        district.district_name = updates["district_name"]
+    if "province" in updates and updates["province"] is not None:
+        district.province_name = updates["province"]
+    if "population" in updates and updates["population"] is not None:
+        pop_entry = session.query(PerDistrictPopulation).filter(PerDistrictPopulation.district_id == district_id).first()
+        if pop_entry:
+            pop_entry.population = updates["population"]
+        else:
+            pop_entry = PerDistrictPopulation(district_id=district_id, population=updates["population"])
+            session.add(pop_entry)
+            
+    session.commit()
+    session.refresh(district)
+    
+    pop_entry = session.query(PerDistrictPopulation).filter(PerDistrictPopulation.district_id == district_id).first()
+    
+    return {
+        "district_id": district.district_id,
+        "district_name": district.district_name,
+        "province_name": district.province_name,
+        "latitude": district.latitude,
+        "longitude": district.longitude,
+        "population": pop_entry.population if pop_entry else 0,
+    }
+
+
+def delete_district_postgres(session, district_id: int) -> Dict[str, Any]:
+    """Delete a district row by primary key."""
+    from models.districtModel import District
+    district = session.query(District).filter(District.district_id == district_id).first()
+    if not district:
+        return {"error": True, "msg": f"District {district_id} not found"}
+    session.delete(district)
+    session.commit()
+    return {"msg": f"District {district_id} deleted successfully"}
+
+
+# ── Disease CRUD helpers (PostgreSQL) ─────────────────────────────────────
+
+def update_disease_postgres(session, disease_id: int, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Update a disease row and return the updated dict."""
+    from models.diseaseModel import Disease
+    disease = session.query(Disease).filter(Disease.disease_id == disease_id).first()
+    if not disease:
+        return {"error": True, "msg": f"Disease {disease_id} not found"}
+    if "disease_name" in updates and updates["disease_name"] is not None:
+        disease.disease_name = updates["disease_name"]
+    if "description" in updates and updates["description"] is not None:
+        disease.description = updates["description"]
+    session.commit()
+    session.refresh(disease)
+    return {
+        "disease_id": disease.disease_id,
+        "disease_name": disease.disease_name,
+        "description": disease.description,
+    }
+
+
+def delete_disease_postgres(session, disease_id: int) -> Dict[str, Any]:
+    """Delete a disease row by primary key."""
+    from models.diseaseModel import Disease
+    disease = session.query(Disease).filter(Disease.disease_id == disease_id).first()
+    if not disease:
+        return {"error": True, "msg": f"Disease {disease_id} not found"}
+    session.delete(disease)
+    session.commit()
+    return {"msg": f"Disease {disease_id} deleted successfully"}
+
+
+# ── Historical data update (PostgreSQL) ───────────────────────────────────
+
+def update_historical_data_postgres(session, data_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Partially update a HistoryData row and return the updated dict."""
+    from models.historydataModel import HistoryData
+    record = session.query(HistoryData).filter(HistoryData.data_id == data_id).first()
+    if not record:
+        return {"error": True, "msg": f"Record {data_id} not found"}
+    allowed = ("week_number", "year", "district_id", "disease_id", "case_count")
+    for field in allowed:
+        if field in updates and updates[field] is not None:
+            setattr(record, field, updates[field])
+    session.commit()
+    session.refresh(record)
+    return {
+        "data_id": str(record.data_id),
+        "week_number": record.week_number,
+        "year": record.year,
+        "district_id": record.district_id,
+        "disease_id": record.disease_id,
+        "case_count": record.case_count,
+    }
+
+
+# ── User update (MongoDB) ──────────────────────────────────────────────────
+
+def update_user_mongo(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Update allowed user profile fields in MongoDB by appwrite_id."""
+    from bson import ObjectId
+    db = get_database()
+    users = db["users"]
+
+    allowed = {"email", "name", "is_banned"}
+    update_fields: Dict[str, Any] = {k: v for k, v in updates.items() if k in allowed and v is not None}
+
+    if not update_fields:
+        return {"error": True, "msg": "No valid fields to update"}
+
+    update_fields["updated_at"] = datetime.now(timezone.utc)
+
+    result = users.update_one({"appwrite_id": user_id}, {"$set": update_fields})
+    if result.matched_count == 0:
+        try:
+            result = users.update_one({"_id": ObjectId(user_id)}, {"$set": update_fields})
+        except Exception:
+            pass
+
+    if result.matched_count == 0:
+        return {"error": True, "msg": "User not found"}
+
+    return {"msg": "User updated successfully"}
