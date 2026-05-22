@@ -38,8 +38,10 @@ def get_redis() -> Redis | None:
     _redis_client = Redis.from_url(
         redis_url,
         decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5,
+        socket_connect_timeout=60,
+        socket_timeout=60,
+        retry_on_timeout=True,
+        socket_keepalive=True,
         health_check_interval=30,
     )
     return _redis_client

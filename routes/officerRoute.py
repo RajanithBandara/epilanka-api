@@ -14,6 +14,11 @@ from controllers.reportController import (
     fetch_officer_history_pattern,
     bulk_upsert_weekly_reports,
 )
+import asyncio
+from utils.officer_analytics_cache import (
+    get_officer_analytics_payload,
+    invalidate_officer_analytics_cache,
+)
 from utils.auth_deps import get_current_officer, AppwriteUser
 
 
@@ -88,7 +93,11 @@ def officer_create_disease(
     db.add(disease)
     db.commit()
     db.refresh(disease)
-
+    # Schedule cache invalidation for officer analytics
+    try:
+        asyncio.create_task(invalidate_officer_analytics_cache())
+    except Exception:
+        pass
     return {
         "disease_id": disease.disease_id,
         "disease_name": disease.disease_name,
@@ -123,7 +132,11 @@ def officer_update_disease(
 
     db.commit()
     db.refresh(disease)
-
+    # Schedule cache invalidation for officer analytics
+    try:
+        asyncio.create_task(invalidate_officer_analytics_cache())
+    except Exception:
+        pass
     return {
         "disease_id": disease.disease_id,
         "disease_name": disease.disease_name,
@@ -218,6 +231,16 @@ async def officer_get_history_pattern(
         year_to=year_to,
         limit=limit,
     )
+
+
+
+@router.get("/analytics", status_code=200)
+async def officer_get_analytics(
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    disease_id: Optional[int] = Query(None),
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    return await get_officer_analytics_payload(year=year, disease_id=disease_id)
 
 
 class OfficerNameUpdate(BaseModel):
