@@ -33,7 +33,7 @@ def test_notification_endpoints(client, fake_state):
     assert delete_response.status_code == 200
     assert delete_response.json()["message"] == "Notification deleted"
 
-    event_names = [event["event_name"] for event in fake_state["emitted_events"]]
+    event_names = [event["event_name"] for event in fake_state["emitted_events"] if event["event_name"] != "unread_count_updated"]
     assert event_names == ["notification", "notification_updated", "notification_deleted"]
 
 

@@ -49,18 +49,22 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting up...")
     connect_to_mongodb()  # Sync MongoDB connection
     connect_to_mongodb_async()  # Async MongoDB connection
-    await refresh_admin_analytics_cache()
-    await refresh_officer_analytics_cache()
-    start_admin_analytics_background_service()
-    start_officer_analytics_background_service()
+    
+    is_testing = os.getenv("TESTING") == "1" or bool(os.getenv("PYTEST_CURRENT_TEST"))
+    if not is_testing:
+        await refresh_admin_analytics_cache()
+        await refresh_officer_analytics_cache()
+        start_admin_analytics_background_service()
+        start_officer_analytics_background_service()
     print("✅ All connections initialized")
     
     yield
     
     # Shutdown
     print("🛑 Shutting down...")
-    await stop_admin_analytics_background_service()
-    await stop_officer_analytics_background_service()
+    if not is_testing:
+        await stop_admin_analytics_background_service()
+        await stop_officer_analytics_background_service()
     close_mongodb_connection()  # Close sync MongoDB
     await close_mongodb_async_connection()  # Close async MongoDB
     await close_postgres_connection()  # Close PostgreSQL

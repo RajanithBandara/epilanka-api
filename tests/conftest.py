@@ -698,6 +698,42 @@ def client(monkeypatch, app, api_app, fake_state):
     async def fake_view_tables_postgres(reports_limit: int = 10):
         return {"tables": ["diseases", "historicaldata"], "reports_limit": reports_limit}
 
+    async def fake_get_admin_historical_data(week_number=None, year=None, district_id=None, disease_id=None, skip=0, limit=20):
+        records = fake_state["sync_db"].history
+        filtered = []
+        for r in records:
+            if week_number is not None and r.week_number != week_number:
+                continue
+            if year is not None and r.year != year:
+                continue
+            if district_id is not None and r.district_id != district_id:
+                continue
+            if disease_id is not None and r.disease_id != disease_id:
+                continue
+            filtered.append({
+                "data_id": str(r.data_id),
+                "week_number": r.week_number,
+                "year": r.year,
+                "district_id": r.district_id,
+                "disease_id": r.disease_id,
+                "case_count": r.case_count,
+            })
+        return filtered[skip:skip+limit]
+
+    async def fake_get_admin_diseases():
+        diseases = fake_state["sync_db"].diseases
+        return [
+            {
+                "disease_id": d.disease_id,
+                "disease_name": d.disease_name,
+                "description": d.description,
+            }
+            for d in diseases
+        ]
+
+    async def fake_invalidate_cache():
+        pass
+
     monkeypatch.setattr(admin_route, "admin_register_appwrite", fake_admin_register)
     monkeypatch.setattr(admin_route, "get_all_admins_appwrite", fake_get_all_admins)
     monkeypatch.setattr(admin_route, "officer_register_appwrite", fake_officer_register)
@@ -710,6 +746,9 @@ def client(monkeypatch, app, api_app, fake_state):
     monkeypatch.setattr(admin_route, "delete_user_mongo", fake_delete_user)
     monkeypatch.setattr(admin_route, "get_all_users_mongo", fake_admin_list_users)
     monkeypatch.setattr(admin_route, "view_tables_postgres", fake_view_tables_postgres)
+    monkeypatch.setattr(admin_route, "get_admin_historical_data", fake_get_admin_historical_data)
+    monkeypatch.setattr(admin_route, "get_admin_diseases", fake_get_admin_diseases)
+    monkeypatch.setattr(admin_route, "invalidate_admin_analytics_cache", fake_invalidate_cache)
 
     async def fake_fetch_thresholds(district_id=None, disease_id=None):
         return {
