@@ -15,6 +15,7 @@ from utils.redis_client import (
     cache_delete_pattern,
     DEFAULT_CACHE_TTL_SECONDS,
 )
+from utils.officer_analytics_cache import invalidate_officer_analytics_cache
 
 
 def _cache_key_safe(value: str) -> str:
@@ -293,6 +294,8 @@ async def create_weekly_report(
 
         # Weekly analytics depend on this table, so clear cached slices.
         await cache_delete_pattern("reports:weekly-records:v1:*")
+        # Invalidate officer analytics snapshot as well
+        await invalidate_officer_analytics_cache()
 
         return {
             "report_id": str(existing_report.report_id),
@@ -373,7 +376,8 @@ async def bulk_upsert_weekly_reports(
 
         # Bust related cache entries.
         await cache_delete_pattern("reports:weekly-records:v1:*")
-
+        # Invalidate officer analytics snapshot as well
+        await invalidate_officer_analytics_cache()
         return {
             "updated": len(rows_to_update),
             "skipped": skipped_ids,

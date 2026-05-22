@@ -33,6 +33,12 @@ from controllers.notificationController import (
     delete_notification,
     get_notification_by_id,
 )
+from utils.admin_analytics_cache import (
+    get_admin_analytics_payload,
+    get_admin_diseases,
+    get_admin_historical_data,
+    invalidate_admin_analytics_cache,
+)
 from models.historydataModel import HistoryData
 from models.districtModel import District
 from models.diseaseModel import Disease
@@ -204,7 +210,7 @@ async def get_all_tables(
 
 
 @router.post("/historical-data", status_code=status.HTTP_201_CREATED)
-def admin_create_historical_data(
+async def admin_create_historical_data(
     payload: AdminHistoricalDataCreate,
     db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
@@ -227,6 +233,7 @@ def admin_create_historical_data(
     db.add(history)
     db.commit()
     db.refresh(history)
+    await invalidate_admin_analytics_cache()
 
     return {
         "data_id": str(history.data_id),
@@ -239,39 +246,51 @@ def admin_create_historical_data(
 
 
 @router.get("/historical-data")
-def admin_list_historical_data(
+async def admin_list_historical_data(
     week_number: Optional[int] = Query(None, ge=1, le=53),
     year: Optional[int] = Query(None, ge=1900),
     district_id: Optional[int] = Query(None),
     disease_id: Optional[int] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
-    db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
 ):
-    query = db.query(HistoryData)
-    if week_number is not None:
-        query = query.filter(HistoryData.week_number == week_number)
-    if year is not None:
-        query = query.filter(HistoryData.year == year)
-    if district_id is not None:
-        query = query.filter(HistoryData.district_id == district_id)
-    if disease_id is not None:
-        query = query.filter(HistoryData.disease_id == disease_id)
-
-    records = query.order_by(HistoryData.year.desc(), HistoryData.week_number.desc()).offset(skip).limit(limit).all()
+    records = await get_admin_historical_data(
+        week_number=week_number,
+        year=year,
+        district_id=district_id,
+        disease_id=disease_id,
+        skip=skip,
+        limit=limit,
+    )
 
     return [
         {
-            "data_id": str(r.data_id),
-            "week_number": r.week_number,
-            "year": r.year,
-            "district_id": r.district_id,
-            "disease_id": r.disease_id,
-            "case_count": r.case_count,
+            "data_id": str(r["data_id"]),
+            "week_number": r["week_number"],
+            "year": r["year"],
+            "district_id": r["district_id"],
+            "disease_id": r["disease_id"],
+            "case_count": r["case_count"],
         }
         for r in records
     ]
+
+
+@router.get("/analytics")
+async def admin_get_analytics(
+    week_number: Optional[int] = Query(None, ge=1, le=53),
+    year: Optional[int] = Query(None, ge=1900),
+    district_id: Optional[int] = Query(None),
+    disease_id: Optional[int] = Query(None),
+    current: AppwriteUser = Depends(get_current_admin),
+):
+    return await get_admin_analytics_payload(
+        week_number=week_number,
+        year=year,
+        district_id=district_id,
+        disease_id=disease_id,
+    )
 
 
 @router.get("/historical-data/{data_id}")
@@ -294,7 +313,7 @@ def admin_get_historical_data(
 
 
 @router.delete("/historical-data/{data_id}", status_code=status.HTTP_200_OK)
-def admin_delete_historical_data(
+async def admin_delete_historical_data(
     data_id: str,
     db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
@@ -304,22 +323,21 @@ def admin_delete_historical_data(
         raise HTTPException(status_code=404, detail=f"Record {data_id} not found")
     db.delete(record)
     db.commit()
+    await invalidate_admin_analytics_cache()
     return {"msg": f"Record {data_id} deleted successfully"}
 
 
 @router.get("/diseases")
-def admin_list_diseases(
-    db: Session = Depends(get_postgres_connection),
+async def admin_list_diseases(
     current: AppwriteUser = Depends(get_current_admin),
 ):
-    diseases = db.query(Disease).order_by(Disease.disease_id).all()
-    return [{"disease_id": d.disease_id, "disease_name": d.disease_name, "description": d.description} for d in diseases]
+    return await get_admin_diseases()
 
 
 # ── Diseases — create / update / delete ─────────────────────────────────────
 
 @router.post("/diseases", status_code=status.HTTP_201_CREATED)
-def admin_create_disease(
+async def admin_create_disease(
     payload: DiseaseCreate,
     db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
@@ -332,11 +350,12 @@ def admin_create_disease(
     db.add(disease)
     db.commit()
     db.refresh(disease)
+    await invalidate_admin_analytics_cache()
     return {"disease_id": disease.disease_id, "disease_name": disease.disease_name, "description": disease.description}
 
 
 @router.put("/diseases/{disease_id}", status_code=status.HTTP_200_OK)
-def admin_update_disease(
+async def admin_update_disease(
     disease_id: int,
     payload: DiseaseUpdate,
     db: Session = Depends(get_postgres_connection),
@@ -346,11 +365,12 @@ def admin_update_disease(
     result = update_disease_postgres(db, disease_id, payload.model_dump(exclude_none=True))
     if result.get("error"):
         raise HTTPException(status_code=404, detail=result["msg"])
+    await invalidate_admin_analytics_cache()
     return result
 
 
 @router.delete("/diseases/{disease_id}", status_code=status.HTTP_200_OK)
-def admin_delete_disease(
+async def admin_delete_disease(
     disease_id: int,
     db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
@@ -359,6 +379,7 @@ def admin_delete_disease(
     result = delete_disease_postgres(db, disease_id)
     if result.get("error"):
         raise HTTPException(status_code=404, detail=result["msg"])
+    await invalidate_admin_analytics_cache()
     return result
 
 
@@ -374,7 +395,7 @@ def admin_list_districts(
 
 
 @router.post("/districts", status_code=status.HTTP_201_CREATED)
-def admin_create_district(
+async def admin_create_district(
     payload: DistrictCreate,
     db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
@@ -383,11 +404,12 @@ def admin_create_district(
     result = create_district_postgres(db, payload.district_id, payload.district_name, payload.province, payload.population)
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["msg"])
+    await invalidate_admin_analytics_cache()
     return result
 
 
 @router.put("/districts/{district_id}", status_code=status.HTTP_200_OK)
-def admin_update_district(
+async def admin_update_district(
     district_id: int,
     payload: DistrictUpdate,
     db: Session = Depends(get_postgres_connection),
@@ -397,11 +419,12 @@ def admin_update_district(
     result = update_district_postgres(db, district_id, payload.model_dump(exclude_none=True))
     if result.get("error"):
         raise HTTPException(status_code=404, detail=result["msg"])
+    await invalidate_admin_analytics_cache()
     return result
 
 
 @router.delete("/districts/{district_id}", status_code=status.HTTP_200_OK)
-def admin_delete_district(
+async def admin_delete_district(
     district_id: int,
     db: Session = Depends(get_postgres_connection),
     current: AppwriteUser = Depends(get_current_admin),
@@ -410,13 +433,14 @@ def admin_delete_district(
     result = delete_district_postgres(db, district_id)
     if result.get("error"):
         raise HTTPException(status_code=404, detail=result["msg"])
+    await invalidate_admin_analytics_cache()
     return result
 
 
 # ── Historical Data — PUT (update) ───────────────────────────────────────────
 
 @router.put("/historical-data/{data_id}", status_code=status.HTTP_200_OK)
-def admin_update_historical_data(
+async def admin_update_historical_data(
     data_id: str,
     payload: HistoricalDataUpdate,
     db: Session = Depends(get_postgres_connection),
@@ -426,6 +450,7 @@ def admin_update_historical_data(
     result = update_historical_data_postgres(db, data_id, payload.model_dump(exclude_none=True))
     if result.get("error"):
         raise HTTPException(status_code=404, detail=result["msg"])
+    await invalidate_admin_analytics_cache()
     return result
 
 

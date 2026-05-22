@@ -17,6 +17,16 @@ from config.db import (
 )
 from config.postgredb import close_postgres_connection
 from utils.redis_client import close_redis_connection
+from utils.admin_analytics_cache import (
+    refresh_admin_analytics_cache,
+    start_admin_analytics_background_service,
+    stop_admin_analytics_background_service,
+)
+from utils.officer_analytics_cache import (
+    refresh_officer_analytics_cache,
+    start_officer_analytics_background_service,
+    stop_officer_analytics_background_service,
+)
 
 from routes.userRoute import router as user_router
 from routes.diseaseRoute import router as disease_router
@@ -39,12 +49,18 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting up...")
     connect_to_mongodb()  # Sync MongoDB connection
     connect_to_mongodb_async()  # Async MongoDB connection
+    await refresh_admin_analytics_cache()
+    await refresh_officer_analytics_cache()
+    start_admin_analytics_background_service()
+    start_officer_analytics_background_service()
     print("✅ All connections initialized")
     
     yield
     
     # Shutdown
     print("🛑 Shutting down...")
+    await stop_admin_analytics_background_service()
+    await stop_officer_analytics_background_service()
     close_mongodb_connection()  # Close sync MongoDB
     await close_mongodb_async_connection()  # Close async MongoDB
     await close_postgres_connection()  # Close PostgreSQL
