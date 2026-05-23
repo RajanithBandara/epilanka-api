@@ -214,7 +214,7 @@ async def fetchHistoricalChartData(district_name: str):
 
 async def fetch_report_metadata():
     """Return districts and diseases for report submission forms."""
-    cache_key = "reports:metadata:v1"
+    cache_key = "reports:metadata:v2"
     cached = await cache_get_json(cache_key)
     if cached is not None:
         return cached
@@ -232,6 +232,35 @@ async def fetch_report_metadata():
         diseases_result = await session.execute(
             select(Disease.disease_id, Disease.disease_name).order_by(Disease.disease_name)
         )
+        history_disease_years_result = await session.execute(
+            select(HistoryData.disease_id, HistoryData.year).distinct()
+        )
+        reports_disease_years_result = await session.execute(
+            select(Report.disease_id, Report.year).distinct()
+        )
+
+        years_set: set[int] = set()
+        disease_years_map: dict[int, set[int]] = defaultdict(set)
+
+        for disease_id_val, year_val in history_disease_years_result.fetchall():
+            if year_val is None:
+                continue
+            years_set.add(year_val)
+            if disease_id_val is not None:
+                disease_years_map[disease_id_val].add(year_val)
+
+        for disease_id_val, year_val in reports_disease_years_result.fetchall():
+            if year_val is None:
+                continue
+            years_set.add(year_val)
+            if disease_id_val is not None:
+                disease_years_map[disease_id_val].add(year_val)
+
+        all_years = sorted(list(years_set), reverse=True)
+        disease_years = {
+            str(did): sorted(list(years), reverse=True)
+            for did, years in disease_years_map.items()
+        }
 
         response = {
             "districts": [
@@ -248,6 +277,8 @@ async def fetch_report_metadata():
                 {"disease_id": row[0], "disease_name": row[1]}
                 for row in diseases_result.fetchall()
             ],
+            "years": all_years,
+            "disease_years": disease_years,
         }
         await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
         return response
