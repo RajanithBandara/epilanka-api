@@ -532,3 +532,19 @@ def admin_get_total_population(
     total = db.query(func.sum(PerDistrictPopulation.population)).scalar()
     return {"total_population": total or 0}
 
+
+@router.delete("/user-reports/{report_id}", status_code=status.HTTP_200_OK)
+async def admin_delete_user_report_route(
+    report_id: str,
+    district: str,
+    current: AppwriteUser = Depends(get_current_admin),
+):
+    try:
+        from controllers.officerController import officer_delete_user_report
+        result = await officer_delete_user_report(report_id, district)
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

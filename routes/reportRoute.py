@@ -7,6 +7,10 @@ from controllers.reportController import (
     fetch_report_metadata,
     create_weekly_report,
     list_weekly_reports,
+    list_uploaded_reports_public,
+    get_current_risk_scores,
+    trigger_risk_recalculation,
+    fetch_ceri_history,
 )
 
 
@@ -72,6 +76,16 @@ async def get_weekly_records(
     )
 
 
+@router.get("/uploaded-records", status_code=200)
+async def get_uploaded_records_public(
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    limit: int = Query(100, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+):
+    """Public endpoint to list uploaded report PDFs (without uploader info)."""
+    return await list_uploaded_reports_public(year=year, limit=limit, skip=skip)
+
+
 @router.post("/weekly-records", status_code=201)
 async def create_weekly_records(payload: WeeklyReportCreate):
     try:
@@ -85,3 +99,46 @@ async def create_weekly_records(payload: WeeklyReportCreate):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/risk-scores", status_code=200)
+async def get_risk_scores(
+    district_id: Optional[int] = Query(None),
+    disease_id: Optional[int] = Query(None),
+):
+    """Return current CERI risk scores, optionally filtered by district and/or disease."""
+    return await get_current_risk_scores(
+        district_id=district_id,
+        disease_id=disease_id,
+    )
+
+
+@router.get("/ceri-history", status_code=200)
+async def get_ceri_history(
+    district_name: Optional[str] = Query(None),
+    disease_id: Optional[int] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Return historical CERI risk scores from MongoDB."""
+    return await fetch_ceri_history(
+        district_name=district_name,
+        disease_id=disease_id,
+        limit=limit,
+    )
+
+
+@router.post("/risk-scores/recalculate", status_code=200)
+async def recalculate_risk_scores():
+    """Manually trigger a CERI risk recalculation (officer / admin use)."""
+    try:
+        result = await trigger_risk_recalculation()
+        return {
+            "message": "CERI risk scores recalculated successfully",
+            "scores_computed": len(result.get("scores", [])),
+            "transitions_detected": len(result.get("transitions", [])),
+            "calculated_at": result.get("calculated_at"),
+            "week": result.get("week"),
+            "year": result.get("year"),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Recalculation failed: {str(exc)}")

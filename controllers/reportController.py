@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from config.db import get_database
 from config.postgredb import AsyncSessionLocal
 from sqlalchemy import select, func, text
+import uuid
 from models.districtModel import District
 from models.historydataModel import HistoryData
 from models.diseaseModel import Disease
@@ -16,6 +17,11 @@ from utils.redis_client import (
     DEFAULT_CACHE_TTL_SECONDS,
 )
 from utils.officer_analytics_cache import invalidate_officer_analytics_cache
+from utils.cloudflareStorage import (
+    upload_file_to_cloudflare_r2_with_key,
+    delete_file_from_cloudflare_r2,
+)
+import os
 
 
 def _cache_key_safe(value: str) -> str:
@@ -623,3 +629,267 @@ async def fetch_officer_history_pattern(
         }
         await cache_set_json(cache_key, response, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
         return response
+
+
+async def get_current_risk_scores(
+    district_id: Optional[int] = None,
+    disease_id: Optional[int] = None,
+):
+    """Return the latest CERI risk scores from the risk_levels table.
+
+    Optionally filtered by district and/or disease.  Results are cached.
+    """
+    cache_key = (
+        "reports:risk-scores:v1:"
+        f"district:{_cache_key_value(district_id)}:"
+        f"disease:{_cache_key_value(disease_id)}"
+    )
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    async with AsyncSessionLocal() as session:
+        query = (
+            select(RiskLevel, Disease.disease_name, District.district_name)
+            .join(Disease, RiskLevel.disease_id == Disease.disease_id)
+            .join(District, RiskLevel.district_id == District.district_id)
+            .order_by(
+                RiskLevel.year.desc(),
+                RiskLevel.week_number.desc(),
+                RiskLevel.calculated_at.desc(),
+            )
+        )
+
+        if district_id is not None:
+            query = query.where(RiskLevel.district_id == district_id)
+        if disease_id is not None:
+            query = query.where(RiskLevel.disease_id == disease_id)
+
+        rows = (await session.execute(query)).all()
+
+        # Keep only the latest record per (disease, district) pair
+        seen: set[tuple[int, int]] = set()
+        scores: list[dict] = []
+        for risk, disease_name, district_name in rows:
+            key = (risk.disease_id, risk.district_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            scores.append({
+                "risk_id": str(risk.risk_id),
+                "disease_id": risk.disease_id,
+                "disease_name": disease_name,
+                "district_id": risk.district_id,
+                "district_name": district_name,
+                "week_number": risk.week_number,
+                "year": risk.year,
+                "risk_level": risk.risk_level,
+                "risk_score": risk.risk_score,
+                "calculated_at": risk.calculated_at.isoformat() if risk.calculated_at else None,
+            })
+
+        response = {
+            "count": len(scores),
+            "scores": sorted(scores, key=lambda x: x.get("risk_score", 0), reverse=True),
+        }
+        # Short TTL — these are recomputed every 6 hours
+        await cache_set_json(cache_key, response, ttl_seconds=600)
+        return response
+
+
+async def fetch_ceri_history(
+    district_name: Optional[str] = None,
+    disease_id: Optional[int] = None,
+    limit: int = 100,
+):
+    """Fetch history of CERI risk scores from MongoDB collections."""
+    db = get_database()
+    collections = []
+    
+    if district_name:
+        dist_clean = district_name.replace(' ', '_').lower()
+        collection_name = f"ceri_{dist_clean}"
+        if collection_name in db.list_collection_names():
+            collections.append(collection_name)
+    else:
+        collections = [name for name in db.list_collection_names() if name.startswith("ceri_")]
+        
+    all_records = []
+    query = {}
+    if disease_id is not None:
+        query["disease_id"] = disease_id
+        
+    for col_name in collections:
+        col = db[col_name]
+        cursor = col.find(query).sort([("year", -1), ("week_number", -1)]).limit(limit)
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            all_records.append(doc)
+            
+    # Global sort across all collections if fetching all
+    all_records.sort(key=lambda x: (x.get("year", 0), x.get("week_number", 0)), reverse=True)
+    
+    paginated = all_records[:limit]
+    
+    return {
+        "count": len(paginated),
+        "limit": limit,
+        "records": paginated
+    }
+
+
+async def trigger_risk_recalculation():
+    """Manually trigger a CERI risk recalculation and return results."""
+    from utils.risk_scheduler import run_risk_calculation
+    from utils.redis_client import cache_delete_pattern as _del_pattern
+
+    # Clear cached risk scores so fresh data is returned immediately
+    await _del_pattern("reports:risk-scores:v1:*")
+
+    result = await run_risk_calculation()
+    return result
+
+
+UPLOADED_REPORTS_COLLECTION = "uploaded_reports"
+
+
+def _serialize_uploaded_report(doc: dict, *, include_uploader: bool) -> dict:
+    uploaded_at = doc.get("uploaded_at")
+    if isinstance(uploaded_at, datetime):
+        uploaded_at = uploaded_at.isoformat()
+
+    result = {
+        "id": str(doc.get("_id")),
+        "file_url": doc.get("file_url"),
+        "filename": doc.get("filename"),
+        "year": doc.get("year"),
+        "uploaded_at": uploaded_at,
+    }
+    if include_uploader:
+        result["uploaded_by"] = doc.get("uploaded_by")
+    return result
+
+
+def _build_uploaded_reports_query(year: Optional[int]) -> dict:
+    query: dict = {}
+    if year is not None:
+        query["year"] = year
+    return query
+
+
+async def list_uploaded_reports(
+    limit: int = 100,
+    skip: int = 0,
+    year: Optional[int] = None,
+    **_ignored,
+):
+    """List uploaded reports (officer view — includes uploader id)."""
+    db = get_database()
+    collection = db[UPLOADED_REPORTS_COLLECTION]
+
+    query = _build_uploaded_reports_query(year)
+    total = collection.count_documents(query)
+    cursor = (
+        collection.find(query)
+        .sort([("year", -1), ("uploaded_at", -1)])
+        .skip(skip)
+        .limit(limit)
+    )
+
+    return {
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "reports": [_serialize_uploaded_report(doc, include_uploader=True) for doc in cursor],
+    }
+
+
+async def list_uploaded_reports_public(
+    limit: int = 100,
+    skip: int = 0,
+    year: Optional[int] = None,
+    **_ignored,
+):
+    """List uploaded reports for public view (without uploader id)."""
+    db = get_database()
+    collection = db[UPLOADED_REPORTS_COLLECTION]
+
+    query = _build_uploaded_reports_query(year)
+    total = collection.count_documents(query)
+    cursor = (
+        collection.find(query)
+        .sort([("year", -1), ("uploaded_at", -1)])
+        .skip(skip)
+        .limit(limit)
+    )
+
+    return {
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "reports": [_serialize_uploaded_report(doc, include_uploader=False) for doc in cursor],
+    }
+
+
+async def upload_weekly_report(
+    file_content: bytes,
+    filename: str,
+    uploaded_by: str,  # Appwrite user ID
+    content_type: str = "application/octet-stream",
+    year: Optional[int] = None,
+    **_ignored,
+):
+    """Upload a PDF report to Cloudflare R2 and store the file URL + uploader in MongoDB."""
+    if not filename:
+        filename = f"report_{uuid.uuid4()}.pdf"
+
+    file_url, object_key = upload_file_to_cloudflare_r2_with_key(
+        file_content=file_content,
+        filename=filename,
+        content_type=content_type,
+    )
+
+    if not file_url or not object_key:
+        raise ValueError("Failed to upload file to cloud storage")
+
+    db = get_database()
+    collection = db[UPLOADED_REPORTS_COLLECTION]
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "file_url": file_url,
+        "object_key": object_key,
+        "filename": filename,
+        "uploaded_by": uploaded_by,
+        "year": year,
+        "uploaded_at": now,
+    }
+    result = collection.insert_one(doc)
+    doc["_id"] = result.inserted_id
+
+    return _serialize_uploaded_report(doc, include_uploader=True)
+
+
+async def delete_uploaded_report(report_id: str) -> dict:
+    """Delete an uploaded report record and remove its file from R2."""
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        object_id = ObjectId(report_id)
+    except (InvalidId, TypeError):
+        raise ValueError(f"Invalid report id: {report_id}")
+
+    db = get_database()
+    collection = db[UPLOADED_REPORTS_COLLECTION]
+
+    doc = collection.find_one({"_id": object_id})
+    if not doc:
+        raise ValueError(f"Report not found: {report_id}")
+
+    storage_ref = doc.get("object_key") or doc.get("file_url")
+    storage_removed = bool(storage_ref) and delete_file_from_cloudflare_r2(storage_ref)
+
+    collection.delete_one({"_id": object_id})
+
+    return {"id": report_id, "deleted": True, "storage_removed": storage_removed}

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -10,9 +10,12 @@ from controllers.reportController import (
     fetch_report_metadata,
     create_weekly_report,
     list_weekly_reports,
+    list_uploaded_reports,
     fetch_officer_thresholds,
     fetch_officer_history_pattern,
     bulk_upsert_weekly_reports,
+    upload_weekly_report,
+    delete_uploaded_report,
 )
 import asyncio
 from utils.officer_analytics_cache import (
@@ -204,6 +207,61 @@ async def officer_bulk_update_reports(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/reports/upload", status_code=201)
+async def officer_upload_weekly_report(
+    file: UploadFile = File(...),
+    year: Optional[int] = Form(None),
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    """Upload a PDF report. Only `file` is required; `year` is optional."""
+    try:
+        file_content = await file.read()
+        content_type = file.content_type or "application/octet-stream"
+        uploaded_by = current.get("$id")
+
+        result = await upload_weekly_report(
+            file_content=file_content,
+            filename=file.filename,
+            uploaded_by=uploaded_by,
+            content_type=content_type,
+            year=year,
+        )
+
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+
+
+@router.get("/reports/uploaded", status_code=200)
+async def officer_list_uploaded_reports(
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    limit: int = Query(100, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    """List uploaded report PDFs for officers."""
+    try:
+        return await list_uploaded_reports(year=year, limit=limit, skip=skip)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/reports/uploaded/{report_id}", status_code=200)
+async def officer_delete_uploaded_report(
+    report_id: str,
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    """Delete an uploaded report record."""
+    try:
+        return await delete_uploaded_report(report_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/thresholds", status_code=200)
