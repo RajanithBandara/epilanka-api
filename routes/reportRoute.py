@@ -7,6 +7,7 @@ from controllers.reportController import (
     fetch_report_metadata,
     create_weekly_report,
     list_weekly_reports,
+    list_uploaded_reports_public,
 )
 
 
@@ -70,6 +71,16 @@ async def get_weekly_records(
         limit=limit,
         skip=skip,
     )
+
+
+@router.get("/uploaded-records", status_code=200)
+async def get_uploaded_records_public(
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    limit: int = Query(100, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+):
+    """Public endpoint to list uploaded report PDFs (without uploader info)."""
+    return await list_uploaded_reports_public(year=year, limit=limit, skip=skip)
 
 
 @router.post("/weekly-records", status_code=201)
