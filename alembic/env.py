@@ -7,6 +7,15 @@ from alembic import context
 
 from config.postgredb import Base
 
+# Import all SQLAlchemy models for autogenerate support
+from models.districtModel import District
+from models.diseaseModel import Disease
+from models.reportsModel import Report
+from models.riskModel import RiskLevel
+from models.historydataModel import HistoryData
+from models.perdistrictPopulationModel import PerDistrictPopulation
+from models.rainfalldataModel import RainfallData
+
 
 from dotenv import load_dotenv
 import os

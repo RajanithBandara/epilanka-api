@@ -631,6 +631,125 @@ async def fetch_officer_history_pattern(
         return response
 
 
+async def get_current_risk_scores(
+    district_id: Optional[int] = None,
+    disease_id: Optional[int] = None,
+):
+    """Return the latest CERI risk scores from the risk_levels table.
+
+    Optionally filtered by district and/or disease.  Results are cached.
+    """
+    cache_key = (
+        "reports:risk-scores:v1:"
+        f"district:{_cache_key_value(district_id)}:"
+        f"disease:{_cache_key_value(disease_id)}"
+    )
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return cached
+
+    async with AsyncSessionLocal() as session:
+        query = (
+            select(RiskLevel, Disease.disease_name, District.district_name)
+            .join(Disease, RiskLevel.disease_id == Disease.disease_id)
+            .join(District, RiskLevel.district_id == District.district_id)
+            .order_by(
+                RiskLevel.year.desc(),
+                RiskLevel.week_number.desc(),
+                RiskLevel.calculated_at.desc(),
+            )
+        )
+
+        if district_id is not None:
+            query = query.where(RiskLevel.district_id == district_id)
+        if disease_id is not None:
+            query = query.where(RiskLevel.disease_id == disease_id)
+
+        rows = (await session.execute(query)).all()
+
+        # Keep only the latest record per (disease, district) pair
+        seen: set[tuple[int, int]] = set()
+        scores: list[dict] = []
+        for risk, disease_name, district_name in rows:
+            key = (risk.disease_id, risk.district_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            scores.append({
+                "risk_id": str(risk.risk_id),
+                "disease_id": risk.disease_id,
+                "disease_name": disease_name,
+                "district_id": risk.district_id,
+                "district_name": district_name,
+                "week_number": risk.week_number,
+                "year": risk.year,
+                "risk_level": risk.risk_level,
+                "risk_score": risk.risk_score,
+                "calculated_at": risk.calculated_at.isoformat() if risk.calculated_at else None,
+            })
+
+        response = {
+            "count": len(scores),
+            "scores": sorted(scores, key=lambda x: x.get("risk_score", 0), reverse=True),
+        }
+        # Short TTL — these are recomputed every 6 hours
+        await cache_set_json(cache_key, response, ttl_seconds=600)
+        return response
+
+
+async def fetch_ceri_history(
+    district_name: Optional[str] = None,
+    disease_id: Optional[int] = None,
+    limit: int = 100,
+):
+    """Fetch history of CERI risk scores from MongoDB collections."""
+    db = get_database()
+    collections = []
+    
+    if district_name:
+        dist_clean = district_name.replace(' ', '_').lower()
+        collection_name = f"ceri_{dist_clean}"
+        if collection_name in db.list_collection_names():
+            collections.append(collection_name)
+    else:
+        collections = [name for name in db.list_collection_names() if name.startswith("ceri_")]
+        
+    all_records = []
+    query = {}
+    if disease_id is not None:
+        query["disease_id"] = disease_id
+        
+    for col_name in collections:
+        col = db[col_name]
+        cursor = col.find(query).sort([("year", -1), ("week_number", -1)]).limit(limit)
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            all_records.append(doc)
+            
+    # Global sort across all collections if fetching all
+    all_records.sort(key=lambda x: (x.get("year", 0), x.get("week_number", 0)), reverse=True)
+    
+    paginated = all_records[:limit]
+    
+    return {
+        "count": len(paginated),
+        "limit": limit,
+        "records": paginated
+    }
+
+
+async def trigger_risk_recalculation():
+    """Manually trigger a CERI risk recalculation and return results."""
+    from utils.risk_scheduler import run_risk_calculation
+    from utils.redis_client import cache_delete_pattern as _del_pattern
+
+    # Clear cached risk scores so fresh data is returned immediately
+    await _del_pattern("reports:risk-scores:v1:*")
+
+    result = await run_risk_calculation()
+    return result
+
+
 UPLOADED_REPORTS_COLLECTION = "uploaded_reports"
 
 

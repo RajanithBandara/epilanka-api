@@ -27,6 +27,11 @@ from utils.officer_analytics_cache import (
     start_officer_analytics_background_service,
     stop_officer_analytics_background_service,
 )
+from utils.risk_scheduler import (
+    run_risk_calculation,
+    start_risk_calculation_service,
+    stop_risk_calculation_service,
+)
 
 from routes.userRoute import router as user_router
 from routes.diseaseRoute import router as disease_router
@@ -37,6 +42,7 @@ from routes.adminRoutes import router as admin_report_router
 from routes.officerRoute import router as officer_router
 from routes.notificationRoute import router as notification_router
 from routes.chatRoute import router as chat_router
+from routes.rainfallRoute import router as rainfall_router
 from utils.websocket_manager import sio
 
 load_dotenv()
@@ -56,6 +62,8 @@ async def lifespan(app: FastAPI):
         await refresh_officer_analytics_cache()
         start_admin_analytics_background_service()
         start_officer_analytics_background_service()
+        await run_risk_calculation()          # Initial CERI run on startup
+        start_risk_calculation_service()      # Background loop (every 6 hours)
     print("✅ All connections initialized")
     
     yield
@@ -65,6 +73,7 @@ async def lifespan(app: FastAPI):
     if not is_testing:
         await stop_admin_analytics_background_service()
         await stop_officer_analytics_background_service()
+        await stop_risk_calculation_service()
     close_mongodb_connection()  # Close sync MongoDB
     await close_mongodb_async_connection()  # Close async MongoDB
     await close_postgres_connection()  # Close PostgreSQL
@@ -140,6 +149,7 @@ fastapi_app.include_router(admin_report_router)
 fastapi_app.include_router(officer_router)
 fastapi_app.include_router(notification_router)
 fastapi_app.include_router(chat_router)
+fastapi_app.include_router(rainfall_router)
 
 app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
 
