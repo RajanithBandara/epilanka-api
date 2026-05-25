@@ -1,6 +1,5 @@
 from datetime import date, datetime
 from sqlalchemy import select, func, and_
-from sqlalchemy.orm import aliased
 
 from config.postgredb import AsyncSessionLocal
 from models.districtModel import District
@@ -9,17 +8,25 @@ from models.diseaseModel import Disease
 from models.riskModel import RiskLevel
 
 
+def get_current_week_and_year() -> tuple[int, int]:
+    """Return today's ISO (week_number, year)."""
+    iso = datetime.now().isocalendar()
+    return int(iso[1]), int(iso[0])
+
+
 def get_current_week() -> int:
-    return datetime.now().isocalendar()[1]
+    return get_current_week_and_year()[0]
 
 
 def get_current_year() -> int:
-    return datetime.now().isocalendar()[0]
+    return get_current_week_and_year()[1]
 
 
 def get_week_and_year_for_date(target_date: date | None) -> tuple[int, int]:
-    resolved_date = target_date if target_date else datetime.now().date()
-    iso = resolved_date.isocalendar()
+    """Resolve a (week, year) for an explicit date, or the current week if None."""
+    if target_date is None:
+        return get_current_week_and_year()
+    iso = target_date.isocalendar()
     return int(iso[1]), int(iso[0])
 
 
@@ -43,18 +50,17 @@ def normalize_risk_level(level: str | None) -> str | None:
     return None
 
 
-async def get_latest_risk_period(session) -> tuple[int, int]:
-    latest_period_query = (
-        select(RiskLevel.week_number, RiskLevel.year)
-        .order_by(RiskLevel.year.desc(), RiskLevel.week_number.desc())
-        .limit(1)
-    )
-    latest_period = (await session.execute(latest_period_query)).first()
+async def resolve_map_period(
+    session, target_date: date | None = None
+) -> tuple[int, int]:
+    """Resolve the (week_number, year) the map endpoints should query.
 
-    if latest_period:
-        return int(latest_period[0]), int(latest_period[1])
-
-    return get_current_week(), get_current_year()
+    Defaults to the current ISO week (from ``datetime.now()``). The optional
+    ``session`` argument is accepted for symmetry but not used; callers may
+    pass ``None``.
+    """
+    _ = session  # kept for backwards compatibility with previous signature
+    return get_week_and_year_for_date(target_date)
 
 
 async def get_risk_levels_lookup(session, week_number: int, year: int) -> dict[tuple[int, int], str]:
@@ -103,10 +109,9 @@ async def get_all_diseases(session):
 
 async def get_nearest_area_with_risk_levels(lat, lng):
     async with AsyncSessionLocal() as session:
-        current_week, current_year = await get_latest_risk_period(session)
+        current_week, current_year = await resolve_map_period(session)
         risk_levels_lookup = await get_risk_levels_lookup(session, current_week, current_year)
 
-        # Fetch all diseases
         diseases = await get_all_diseases(session)
 
         distance_expr = func.sqrt(
@@ -114,91 +119,70 @@ async def get_nearest_area_with_risk_levels(lat, lng):
             func.pow(District.latitude - lat, 2)
         )
 
-        # Create aliases and build select columns dynamically
-        disease_aliases = {}
-        select_columns = [
-            District.district_id,
-            District.district_name,
-            District.latitude,
-            District.longitude,
-            District.province_name,
-            distance_expr.label('distance')
-        ]
-
-        # Build dynamic columns and joins for each disease
-        query = select(*select_columns)
-
-        for disease_id, disease_name in diseases:
-            alias = aliased(Report)
-            disease_aliases[disease_id] = {
-                'alias': alias,
-                'name': disease_name
-            }
-
-            # Add count column for this disease
-            count_expr = func.coalesce(
-                func.sum(alias.case_count).filter(
-                    and_(
-                        alias.disease_id == disease_id,
-                        alias.week_number == current_week,
-                        alias.year == current_year
-                    )
-                ), 0
-            ).label(f'disease_{disease_id}_count')
-
-            query = query.add_columns(count_expr)
-
-            # Add outer join for this disease
-            query = query.outerjoin(alias, and_(
-                District.district_id == alias.district_id,
-                alias.disease_id == disease_id,
-                alias.week_number == current_week,
-                alias.year == current_year
-            ))
-
-        # Complete the query
-        query = (
-            query
-            .group_by(
+        district_query = (
+            select(
                 District.district_id,
                 District.district_name,
                 District.latitude,
                 District.longitude,
-                District.province_name
+                District.province_name,
+                distance_expr.label('distance'),
             )
             .order_by(distance_expr)
             .limit(1)
         )
 
-        result = await session.execute(query)
-        row = result.first()
+        nearest = (await session.execute(district_query)).first()
+        if not nearest:
+            return None
 
-        if row:
-            # Build risk levels dynamically
-            risk_levels = {}
-            for idx, (disease_id, disease_name) in enumerate(diseases):
-                case_count = int(row[6 + idx])  # Start from index 6 (after basic district info)
-                table_risk_level = risk_levels_lookup.get((int(row[0]), int(disease_id)))
-                risk_levels[f'disease_{disease_id}'] = {
-                    'disease_id': disease_id,
-                    'disease_name': disease_name,
-                    'count': case_count,
-                    'level': table_risk_level if table_risk_level else get_risk_level(case_count)
-                }
+        district_id = int(nearest[0])
 
-            return {
-                "district_id": row[0],
-                "district_name": row[1],
-                "latitude": row[2],
-                "longitude": row[3],
-                "province_name": row[4],
-                "distance": float(row[5]),
-                "week_number": current_week,
-                "year": current_year,
-                "risk_levels": risk_levels
+        case_count_lookup = await get_projected_cases_for_district(
+            session, district_id, current_week, current_year
+        )
+
+        risk_levels = {}
+        for disease_id, disease_name in diseases:
+            case_count = int(case_count_lookup.get(int(disease_id), 0))
+            table_risk_level = risk_levels_lookup.get((district_id, int(disease_id)))
+            risk_levels[f'disease_{disease_id}'] = {
+                'disease_id': disease_id,
+                'disease_name': disease_name,
+                'count': case_count,
+                'level': table_risk_level if table_risk_level else get_risk_level(case_count),
             }
 
-        return None
+        return {
+            "district_id": nearest[0],
+            "district_name": nearest[1],
+            "latitude": nearest[2],
+            "longitude": nearest[3],
+            "province_name": nearest[4],
+            "distance": float(nearest[5]),
+            "week_number": current_week,
+            "year": current_year,
+            "risk_levels": risk_levels,
+        }
+
+
+async def get_projected_cases_for_district(
+    session, district_id: int, week_number: int, year: int
+) -> dict[int, int]:
+    """Return a {disease_id: summed_case_count} map for one district + week."""
+    query = (
+        select(Report.disease_id, func.sum(Report.case_count).label('total'))
+        .where(
+            and_(
+                Report.district_id == district_id,
+                Report.week_number == week_number,
+                Report.year == year,
+            )
+        )
+        .group_by(Report.disease_id)
+    )
+    rows = (await session.execute(query)).all()
+    return {int(disease_id): int(total or 0) for disease_id, total in rows}
 
 
 def get_risk_level(case_count: int) -> str:
@@ -275,81 +259,65 @@ def generate_warning(risk_levels: dict) -> str:
 
 
 async def get_all_districts_with_risks(target_date: date | None = None):
-    """Get risk data for all districts in Sri Lanka"""
+    """Get risk data for all districts in Sri Lanka.
+
+    The week/year resolves to ``target_date``'s ISO week when provided, or
+    the current ISO week from ``datetime.now()`` otherwise — matching what
+    ``/map/nearestlocation`` uses so both views stay aligned.
+    """
     async with AsyncSessionLocal() as session:
-        current_week, current_year = get_week_and_year_for_date(target_date)
+        current_week, current_year = await resolve_map_period(session, target_date)
         risk_levels_lookup = await get_risk_levels_lookup(session, current_week, current_year)
 
-        # Fetch all diseases
         diseases = await get_all_diseases(session)
 
-        # Build select columns
-        select_columns = [
-            District.district_id,
-            District.district_name,
-            District.latitude,
-            District.longitude,
-            District.province_name
-        ]
-
-        # Build dynamic columns and joins for each disease
-        query = select(*select_columns)
-
-        for disease_id, disease_name in diseases:
-            alias = aliased(Report)
-
-            # Add count column for this disease
-            count_expr = func.coalesce(
-                func.sum(alias.case_count).filter(
-                    and_(
-                        alias.disease_id == disease_id,
-                        alias.week_number == current_week,
-                        alias.year == current_year
-                    )
-                ), 0
-            ).label(f'disease_{disease_id}_count')
-
-            query = query.add_columns(count_expr)
-
-            # Add outer join for this disease
-            query = query.outerjoin(alias, and_(
-                District.district_id == alias.district_id,
-                alias.disease_id == disease_id,
-                alias.week_number == current_week,
-                alias.year == current_year
-            ))
-
-        # Complete the query - get all districts
-        query = (
-            query
-            .group_by(
+        district_query = (
+            select(
                 District.district_id,
                 District.district_name,
                 District.latitude,
                 District.longitude,
-                District.province_name
+                District.province_name,
             )
             .order_by(District.district_id)
         )
+        district_rows = (await session.execute(district_query)).all()
 
-        result = await session.execute(query)
-        rows = result.all()
+        # One aggregate query for all districts × diseases this week.
+        counts_query = (
+            select(
+                Report.district_id,
+                Report.disease_id,
+                func.sum(Report.case_count).label('total'),
+            )
+            .where(
+                and_(
+                    Report.week_number == current_week,
+                    Report.year == current_year,
+                )
+            )
+            .group_by(Report.district_id, Report.disease_id)
+        )
+        counts_rows = (await session.execute(counts_query)).all()
+        counts_lookup: dict[tuple[int, int], int] = {
+            (int(d_id), int(dis_id)): int(total or 0)
+            for d_id, dis_id, total in counts_rows
+        }
 
         districts_data = []
-        for row in rows:
-            # Build risk levels dynamically
+        for row in district_rows:
+            district_id = int(row[0])
             risk_levels = {}
-            for idx, (disease_id, disease_name) in enumerate(diseases):
-                case_count = int(row[5 + idx])  # Start from index 5 (after basic district info)
-                table_risk_level = risk_levels_lookup.get((int(row[0]), int(disease_id)))
+            for disease_id, disease_name in diseases:
+                case_count = counts_lookup.get((district_id, int(disease_id)), 0)
+                table_risk_level = risk_levels_lookup.get((district_id, int(disease_id)))
                 risk_levels[f'disease_{disease_id}'] = {
                     'disease_id': disease_id,
                     'disease_name': disease_name,
                     'count': case_count,
-                    'level': table_risk_level if table_risk_level else get_risk_level(case_count)
+                    'level': table_risk_level if table_risk_level else get_risk_level(case_count),
                 }
 
-            # Get maximum risk level for the district
             max_risk = "safe"
             risk_priority = {"safe": 0, "low": 1, "medium": 2, "high": 3}
             for risk_data in risk_levels.values():
@@ -365,14 +333,14 @@ async def get_all_districts_with_risks(target_date: date | None = None):
                 "overall_risk": max_risk,
                 "week_number": current_week,
                 "year": current_year,
-                "risk_levels": risk_levels
+                "risk_levels": risk_levels,
             })
 
         return districts_data
 
 
 async def fetch_all_districts_map_data(target_date: date | None = None):
-    """Fetch all districts with alerts and warnings"""
+    """Fetch all districts with alerts and warnings."""
     current_week, current_year = get_week_and_year_for_date(target_date)
     districts = await get_all_districts_with_risks(target_date)
     

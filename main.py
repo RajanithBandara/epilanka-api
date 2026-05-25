@@ -43,6 +43,7 @@ from routes.officerRoute import router as officer_router
 from routes.notificationRoute import router as notification_router
 from routes.chatRoute import router as chat_router
 from routes.rainfallRoute import router as rainfall_router
+from routes.articleRoute import router as article_router
 from utils.websocket_manager import sio
 
 load_dotenv()
@@ -150,6 +151,7 @@ fastapi_app.include_router(officer_router)
 fastapi_app.include_router(notification_router)
 fastapi_app.include_router(chat_router)
 fastapi_app.include_router(rainfall_router)
+fastapi_app.include_router(article_router)
 
 app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path="socket.io")
 
