@@ -17,6 +17,12 @@ from controllers.reportController import (
     upload_weekly_report,
     delete_uploaded_report,
 )
+from controllers.thresholdController import (
+    list_threshold_years,
+    list_year_thresholds,
+    update_year_threshold,
+    recompute_year_thresholds,
+)
 import asyncio
 from utils.officer_analytics_cache import (
     get_officer_analytics_payload,
@@ -271,6 +277,78 @@ async def officer_get_thresholds(
     current: AppwriteUser = Depends(get_current_officer),
 ):
     return await fetch_officer_thresholds(district_id=district_id, disease_id=disease_id)
+
+
+# ── Threshold management (per-year mean ± σ thresholds) ──────────────────────
+
+class OfficerThresholdUpdate(BaseModel):
+    year: int = Field(..., ge=1900, le=2100)
+    disease_id: int = Field(..., ge=1)
+    district_id: int = Field(..., ge=1)
+    lower_threshold: int = Field(..., ge=0)
+    upper_threshold: int = Field(..., ge=0)
+    outbreak_threshold: int = Field(..., ge=0)
+    reclassify: bool = True
+
+
+class OfficerThresholdRecompute(BaseModel):
+    year: int = Field(..., ge=1900, le=2100)
+    disease_id: Optional[int] = Field(None, ge=1)
+    district_id: Optional[int] = Field(None, ge=1)
+    reclassify: bool = True
+
+
+@router.get("/thresholds/years", status_code=200)
+async def officer_get_threshold_years(
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    return await list_threshold_years()
+
+
+@router.get("/thresholds/year/{year}", status_code=200)
+async def officer_get_year_thresholds(
+    year: int,
+    district_id: Optional[int] = Query(None, ge=1),
+    disease_id: Optional[int] = Query(None, ge=1),
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    if not (1900 <= year <= 2100):
+        raise HTTPException(status_code=400, detail="year out of range")
+    return await list_year_thresholds(
+        year=year, disease_id=disease_id, district_id=district_id
+    )
+
+
+@router.patch("/thresholds", status_code=200)
+async def officer_update_threshold(
+    payload: OfficerThresholdUpdate,
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    try:
+        return await update_year_threshold(
+            year=payload.year,
+            disease_id=payload.disease_id,
+            district_id=payload.district_id,
+            lower_threshold=payload.lower_threshold,
+            upper_threshold=payload.upper_threshold,
+            outbreak_threshold=payload.outbreak_threshold,
+            reclassify=payload.reclassify,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/thresholds/recompute", status_code=200)
+async def officer_recompute_thresholds(
+    payload: OfficerThresholdRecompute,
+    current: AppwriteUser = Depends(get_current_officer),
+):
+    return await recompute_year_thresholds(
+        year=payload.year,
+        disease_id=payload.disease_id,
+        district_id=payload.district_id,
+        reclassify=payload.reclassify,
+    )
 
 
 @router.get("/reports/history-pattern", status_code=200)
