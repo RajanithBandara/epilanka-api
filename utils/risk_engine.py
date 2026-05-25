@@ -20,7 +20,7 @@ import logging
 import re
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from config.db import get_database
@@ -194,11 +194,17 @@ def _fetch_reports_for_disease_district(
     disease_name: str,
     week_number: int,
     year: int,
+    available_collections: set[str] | None = None,
 ) -> list[dict]:
-    """Fetch reports matching disease name from a district collection for a given week."""
+    """Fetch reports matching disease name from a district collection for a given week.
+
+    ``available_collections`` lets the caller pass a precomputed set of collection
+    names so we avoid one ``list_collection_names()`` round-trip per pair.
+    """
     collection_name = f"reports_{district_name.replace(' ', '_').lower()}"
-    available = db.list_collection_names()
-    if collection_name not in available:
+    if available_collections is None:
+        available_collections = set(db.list_collection_names())
+    if collection_name not in available_collections:
         return []
 
     collection = db[collection_name]
@@ -218,6 +224,18 @@ def _fetch_reports_for_disease_district(
 
 # ── Main Entry Point ─────────────────────────────────────────────────────────
 
+def _iso_week_year(moment: datetime) -> tuple[int, int]:
+    """Return (week_number, year) using the ISO calendar.
+
+    ``datetime.now().year`` is the *calendar* year and diverges from the ISO
+    year at year boundaries (e.g. Jan 1, 2027 belongs to ISO week 53 of 2026).
+    Reports are stored per-ISO-week, so the engine must use the ISO year too —
+    otherwise queries miss reports written around New Year.
+    """
+    iso = moment.isocalendar()
+    return int(iso[1]), int(iso[0])
+
+
 async def calculate_ceri_scores() -> dict:
     """Calculate CERI risk scores for all disease-district pairs.
 
@@ -226,18 +244,24 @@ async def calculate_ceri_scores() -> dict:
         2. Count active users from MongoDB
         3. For each (disease, district) pair, compute CERI components
         4. Detect risk-level transitions (for notification dispatch)
-        5. Write updated scores to risk_levels table
+        5. Write updated scores to risk_levels table (PostgreSQL)
+        6. Write updated scores to ceri_{district} (MongoDB)
 
     Returns:
         Dict with keys: scores, transitions, calculated_at, active_users,
-        diseases_checked, districts_checked
+        diseases_checked, districts_checked, week, year
     """
     logger.info("🔬 Starting CERI risk score calculation...")
     now = datetime.now(timezone.utc)
-    current_week = datetime.now().isocalendar()[1]
-    current_year = datetime.now().year
-    previous_week = current_week - 1 if current_week > 1 else 52
-    previous_year = current_year if current_week > 1 else current_year - 1
+    # risk_levels.calculated_at is TIMESTAMP WITHOUT TIME ZONE (SQLAlchemy
+    # DateTime without timezone=True), so asyncpg can't bind a tz-aware value
+    # to it. We keep `now` tz-aware for MongoDB / the return payload and use
+    # this naive-UTC twin for the Postgres column.
+    now_naive_utc = now.replace(tzinfo=None)
+    current_week, current_year = _iso_week_year(now)
+    # Anchoring 'previous' on (now - 7 days) gives correct results across
+    # year boundaries and for ISO years that have 53 weeks.
+    previous_week, previous_year = _iso_week_year(now - timedelta(days=7))
 
     db = get_database()
 
@@ -304,10 +328,16 @@ async def calculate_ceri_scores() -> dict:
         for disease_id, district_id, risk_level in curr_result.fetchall():
             current_levels[(disease_id, district_id)] = risk_level
 
+    # Cache collection names once per run — previously this was called O(N×M)
+    # times (one per disease/district pair), causing dozens of needless
+    # round-trips to MongoDB on every scheduler tick.
+    available_collections: set[str] = set(db.list_collection_names())
+
     # ── Step 4: Compute CERI for every (disease, district) pair ──────────
     scores: list[dict] = []
     transitions: list[dict] = []
     risk_records_to_upsert: list[dict] = []
+    pairs_with_no_reports = 0
 
     for disease in diseases:
         for district in districts:
@@ -315,16 +345,23 @@ async def calculate_ceri_scores() -> dict:
                 # Current week reports
                 reports_current = _fetch_reports_for_disease_district(
                     db, district["name"], disease["name"], current_week, current_year,
+                    available_collections=available_collections,
                 )
 
                 # Previous week reports (for temporal urgency)
                 reports_previous = _fetch_reports_for_disease_district(
                     db, district["name"], disease["name"], previous_week, previous_year,
+                    available_collections=available_collections,
                 )
 
-                # Skip if no reports in either week (no signal)
+                # Every (disease, district) pair is scored on every run, even
+                # when there is no current/previous signal — empty input maps
+                # to a zero CERI / "low" risk, which is the correct baseline to
+                # surface to clients (and to the map).  This guarantees one
+                # MongoDB doc per district per disease per week, matching the
+                # 6-hour scheduler tick.
                 if not reports_current and not reports_previous:
-                    continue
+                    pairs_with_no_reports += 1
 
                 # Compute components
                 dsm, dsm_breakdown = _compute_dsm(reports_current)
@@ -360,7 +397,7 @@ async def calculate_ceri_scores() -> dict:
                 }
                 scores.append(score_entry)
 
-                # Record for PostgreSQL upsert
+                # Record for PostgreSQL upsert (naive UTC — see note above)
                 risk_records_to_upsert.append({
                     "disease_id": disease["id"],
                     "district_id": district["id"],
@@ -368,7 +405,7 @@ async def calculate_ceri_scores() -> dict:
                     "year": current_year,
                     "risk_level": risk_level,
                     "risk_score": round(ceri, 2),
-                    "calculated_at": now,
+                    "calculated_at": now_naive_utc,
                 })
 
                 # Transition detection: compare with previous week or earlier this week
@@ -435,43 +472,63 @@ async def calculate_ceri_scores() -> dict:
             await session.commit()
 
     # ── Step 6: Persist CERI scores to MongoDB district-wise collections ─
-    if scores:
-        for score in scores:
-            district_name = score["district_name"]
-            collection_name = f"ceri_{district_name.replace(' ', '_').lower()}"
-            collection = db[collection_name]
-            
-            query = {
+    mongo_writes = 0
+    mongo_failures = 0
+    for score in scores:
+        district_name = score["district_name"]
+        collection_name = f"ceri_{district_name.replace(' ', '_').lower()}"
+        collection = db[collection_name]
+
+        # Include district_id in the filter so a stray doc from another
+        # district (or a stale generator run) can't collide on disease/week/year.
+        query = {
+            "disease_id": score["disease_id"],
+            "district_id": score["district_id"],
+            "week_number": current_week,
+            "year": current_year,
+        }
+
+        doc = {
+            "$set": {
                 "disease_id": score["disease_id"],
+                "disease_name": score["disease_name"],
+                "district_id": score["district_id"],
+                "district_name": district_name,
                 "week_number": current_week,
-                "year": current_year
+                "year": current_year,
+                "ceri_score": score["ceri_score"],
+                "risk_level": score["risk_level"],
+                "report_count": score["report_count"],
+                "vote_total": score["vote_total"],
+                "components": score["components"],
+                "calculated_at": now,
             }
-            
-            doc = {
-                "$set": {
-                    "disease_id": score["disease_id"],
-                    "disease_name": score["disease_name"],
-                    "district_id": score["district_id"],
-                    "district_name": district_name,
-                    "week_number": current_week,
-                    "year": current_year,
-                    "ceri_score": score["ceri_score"],
-                    "risk_level": score["risk_level"],
-                    "report_count": score["report_count"],
-                    "vote_total": score["vote_total"],
-                    "components": score["components"],
-                    "calculated_at": now
-                }
-            }
-            
-            try:
-                collection.update_one(query, doc, upsert=True)
-            except Exception:
-                logger.exception("Failed to save CERI to MongoDB for district %s", district_name)
+        }
+
+        try:
+            result = collection.update_one(query, doc, upsert=True)
+            mongo_writes += 1
+            logger.debug(
+                "Mongo upsert %s disease=%s week=%d/%d matched=%d modified=%d upserted=%s",
+                collection_name,
+                score["disease_name"],
+                current_week,
+                current_year,
+                result.matched_count,
+                result.modified_count,
+                bool(result.upserted_id),
+            )
+        except Exception:
+            mongo_failures += 1
+            logger.exception("Failed to save CERI to MongoDB for district %s", district_name)
 
     logger.info(
-        "✅ CERI calculation complete: %d scores, %d risk transitions detected",
+        "✅ CERI calculation complete — week %d/%d: %d scores, %d transitions, "
+        "%d mongo upserts (%d failed), %d pairs had no reports (scored 0)",
+        current_week, current_year,
         len(scores), len(transitions),
+        mongo_writes, mongo_failures,
+        pairs_with_no_reports,
     )
 
     return {
