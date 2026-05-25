@@ -28,7 +28,6 @@ from utils.officer_analytics_cache import (
     stop_officer_analytics_background_service,
 )
 from utils.risk_scheduler import (
-    run_risk_calculation,
     start_risk_calculation_service,
     stop_risk_calculation_service,
 )
@@ -63,8 +62,8 @@ async def lifespan(app: FastAPI):
         await refresh_officer_analytics_cache()
         start_admin_analytics_background_service()
         start_officer_analytics_background_service()
-        await run_risk_calculation()          # Initial CERI run on startup
-        start_risk_calculation_service()      # Background loop (every 6 hours)
+        # Scheduler runs CERI immediately on its first tick, then every 6 hours.
+        start_risk_calculation_service()
     print("✅ All connections initialized")
     
     yield
